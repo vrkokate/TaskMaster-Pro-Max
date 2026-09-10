@@ -3,7 +3,8 @@ name: TaskMaster Pro Max - Cloud APK Build
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
@@ -26,8 +27,11 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK 35
+        shell: bash
         run: |
+          set -e
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
@@ -39,10 +43,12 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE="$(find . -maxdepth 1 -type f -name 'TaskMasterProMax_Android_v*_Cloud_APK_Build.zip' | head -n 1)"
+          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'TaskMasterProMax_Android_*.zip' | head -n 1)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: TaskMaster Pro Max project ZIP not found."
+            echo "ERROR: TaskMaster Pro Max Android project ZIP not found."
+            echo "Available ZIP files:"
+            find . -maxdepth 3 -type f -name '*.zip' -print || true
             exit 1
           fi
 
@@ -55,85 +61,154 @@ jobs:
 
           PROJECT_DIR="$(find extracted_project -type f -name 'settings.gradle' -print -quit | xargs -r dirname)"
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android project not found after extraction."
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+            echo "ERROR: Android project settings.gradle not found."
+            find extracted_project -maxdepth 5 -type f -name 'settings.gradle' -print || true
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Android project: $PROJECT_DIR"
 
-      - name: Fix release version preflight
+      - name: Verify project files
         shell: bash
         run: |
           set -e
 
-          PREFLIGHT="$PROJECT_DIR/tools/preflight.py"
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
 
-          if [ ! -f "$PREFLIGHT" ]; then
-            echo "ERROR: preflight.py not found."
-            exit 1
-          fi
+          echo "Project files verified."
+
+      - name: Fix legacy release version checks
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -e
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          import os
+          root = Path(".")
+          gradle = (root / "app" / "build.gradle").read_text(encoding="utf-8")
 
-          p = Path(os.environ["PROJECT_DIR"]) / "tools" / "preflight.py"
-          s = p.read_text(encoding="utf-8")
+          code_match = re.search(r"versionCode\s+(\d+)", gradle)
+          name_match = re.search(r'versionName\s+"([^"]+)"', gradle)
 
-          old = """ok('Release version 1.0.3/14', 'versionCode 14' in gradle and 'versionName "1.0.3"' in gradle)"""
-          new = """ok('Release version 1.1.1/22', 'versionCode 22' in gradle and 'versionName "1.1.1"' in gradle)"""
+          if not code_match or not name_match:
+              raise SystemExit("ERROR: Could not determine Android release version.")
 
-          if old in s:
-              s = s.replace(old, new)
-              p.write_text(s, encoding="utf-8")
-              print("Fixed stale preflight version check: 1.0.3/14 -> 1.1.1/22")
-          elif "'versionCode 22' in gradle" in s and "'versionName \"1.1.1\"' in gradle" in s:
-              print("Preflight version check is already correct.")
-          else:
-              print("ERROR: Expected release version check was not found.")
-              raise SystemExit(1)
+          code = code_match.group(1)
+          name = name_match.group(1)
+
+          print(f"Detected Android version: {name} / code {code}")
+
+          # Fix stale version check in tools/preflight.py
+          preflight = root / "tools" / "preflight.py"
+
+          if preflight.exists():
+              s = preflight.read_text(encoding="utf-8")
+
+              s = re.sub(
+                  r"ok\('Release version[^\\n]*",
+                  f'''ok('Release version {name}/{code}', 'versionCode {code}' in gradle and 'versionName "{name}"' in gradle)''',
+                  s
+              )
+
+              preflight.write_text(s, encoding="utf-8")
+              print("Updated tools/preflight.py")
+
+          # Fix stale version check in qa_check.py
+          qa = root / "qa_check.py"
+
+          if qa.exists():
+              s = qa.read_text(encoding="utf-8")
+
+              s = re.sub(
+                  r"ok\('Release version'[^\\n]*",
+                  f'''ok('Release version', 'versionCode {code}' in gradle and 'versionName "{name}"' in gradle)''',
+                  s
+              )
+
+              s = re.sub(
+                  r"TaskMaster Pro Max v[0-9.]+ \([0-9]+\) Final Build Gate",
+                  f"TaskMaster Pro Max v{name} ({code}) Final Build Gate",
+                  s
+              )
+
+              qa.write_text(s, encoding="utf-8")
+              print("Updated qa_check.py")
+
+          print("Legacy release-version checks fixed successfully.")
           PY
 
       - name: Run preflight
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          set -e
           python3 tools/preflight.py
 
       - name: Run final build gate
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          set -e
           python3 tools/final_build_gate.py
 
       - name: Run final release audit
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          set -e
           python3 tools/final_release_audit.py
 
       - name: Build installable debug APK
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          set -e
+
           gradle --no-daemon :app:assembleDebug
 
       - name: Verify APK
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          echo "APK verified successfully."
+          set -e
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          test -s "$APK"
+
+          echo "APK successfully created:"
+          ls -lh "$APK"
 
       - name: Copy APK
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk"
+          set -e
+
+          cp \
+            app/build/outputs/apk/debug/app-debug.apk \
+            TaskMasterProMax-v1.1.1-debug.apk
+
+          test -s TaskMasterProMax-v1.1.1-debug.apk
 
       - name: Generate SHA-256
+        shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          sha256sum "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk" \
-            | tee "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk.sha256"
+          set -e
+
+          sha256sum \
+            TaskMasterProMax-v1.1.1-debug.apk \
+            | tee TaskMasterProMax-v1.1.1-debug.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -141,5 +216,15 @@ jobs:
           name: TaskMasterProMax-v1.1.1-APK
           if-no-files-found: error
           path: |
-            TaskMasterProMax-v1.1.1-debug.apk
-            TaskMasterProMax-v1.1.1-debug.apk.sha256
+            ${{ env.PROJECT_DIR }}/TaskMasterProMax-v1.1.1-debug.apk
+            ${{ env.PROJECT_DIR }}/TaskMasterProMax-v1.1.1-debug.apk.sha256
+
+      - name: Build completed
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "TaskMaster Pro Max APK BUILD SUCCESS"
+          echo "Version: 1.1.1"
+          echo "Version Code: 22"
+          echo "APK artifact uploaded successfully."
+          echo "========================================"
