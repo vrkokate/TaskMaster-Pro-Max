@@ -116,7 +116,7 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE="TaskMasterProMax_Android_v22_FINAL_FIXED.zip"
+          ZIP_FILE="TaskMasterProMax_Android_v22_Cloud_APK_Build.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
 
