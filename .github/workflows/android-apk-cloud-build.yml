@@ -2,6 +2,11 @@ name: TaskMaster Pro Max - Cloud APK Build
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
 
 jobs:
   build-apk:
@@ -24,48 +29,117 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Install Gradle 8.7
-        run: |
-          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          unzip -q gradle-8.7-bin.zip
-          echo "$PWD/gradle-8.7/bin" >> $GITHUB_PATH
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Extract TaskMaster Pro Max project
+        shell: bash
         run: |
-          unzip -q TaskMasterProMax_Android_v22_Cloud_APK_Build.zip
-          test -f project/settings.gradle
-          test -f project/app/build.gradle
+          set -e
+
+          ZIP_FILE="$(find . -maxdepth 1 -type f -name 'TaskMasterProMax_Android_v*_Cloud_APK_Build.zip' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: TaskMaster Pro Max project ZIP not found."
+            exit 1
+          fi
+
+          echo "Using project ZIP: $ZIP_FILE"
+
+          rm -rf extracted_project
+          mkdir -p extracted_project
+
+          unzip -q "$ZIP_FILE" -d extracted_project
+
+          PROJECT_DIR="$(find extracted_project -type f -name 'settings.gradle' -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android project not found after extraction."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Fix release version preflight
+        shell: bash
+        run: |
+          set -e
+
+          PREFLIGHT="$PROJECT_DIR/tools/preflight.py"
+
+          if [ ! -f "$PREFLIGHT" ]; then
+            echo "ERROR: preflight.py not found."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          import os
+
+          p = Path(os.environ["PROJECT_DIR"]) / "tools" / "preflight.py"
+          s = p.read_text(encoding="utf-8")
+
+          old = """ok('Release version 1.0.3/14', 'versionCode 14' in gradle and 'versionName "1.0.3"' in gradle)"""
+          new = """ok('Release version 1.1.1/22', 'versionCode 22' in gradle and 'versionName "1.1.1"' in gradle)"""
+
+          if old in s:
+              s = s.replace(old, new)
+              p.write_text(s, encoding="utf-8")
+              print("Fixed stale preflight version check: 1.0.3/14 -> 1.1.1/22")
+          elif "'versionCode 22' in gradle" in s and "'versionName \"1.1.1\"' in gradle" in s:
+              print("Preflight version check is already correct.")
+          else:
+              print("ERROR: Expected release version check was not found.")
+              raise SystemExit(1)
+          PY
 
       - name: Run preflight
-        working-directory: project
-        run: python3 tools/preflight.py
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 tools/preflight.py
 
       - name: Run final build gate
-        working-directory: project
-        run: python3 tools/final_build_gate.py
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 tools/final_build_gate.py
 
-      - name: Build APK
-        working-directory: project
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Run final release audit
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 tools/final_release_audit.py
+
+      - name: Build installable debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          gradle --no-daemon :app:assembleDebug
 
       - name: Verify APK
-        working-directory: project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          echo "APK verified successfully."
 
-      - name: Rename APK
-        working-directory: project
+      - name: Copy APK
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk \
-          TaskMasterProMax-v1.1.1-debug.apk
-          sha256sum TaskMasterProMax-v1.1.1-debug.apk \
-          > TaskMasterProMax-v1.1.1-debug.apk.sha256
+             "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk"
 
-      - name: Upload APK
+      - name: Generate SHA-256
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          sha256sum "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk" \
+            | tee "$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk.sha256"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TaskMaster-Pro-Max-APK
+          name: TaskMasterProMax-v1.1.1-APK
+          if-no-files-found: error
           path: |
-            project/TaskMasterProMax-v1.1.1-debug.apk
-            project/TaskMasterProMax-v1.1.1-debug.apk.sha256
+            TaskMasterProMax-v1.1.1-debug.apk
+            TaskMasterProMax-v1.1.1-debug.apk.sha256
