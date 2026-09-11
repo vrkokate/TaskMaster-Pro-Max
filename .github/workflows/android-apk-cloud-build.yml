@@ -14,7 +14,6 @@ jobs:
   build-apk:
 
     name: Build TaskMaster Pro Max APK
-
     runs-on: ubuntu-latest
 
     steps:
@@ -114,7 +113,7 @@ jobs:
 
 
       # ============================================================
-      # 7. LOCATE FINAL ANDROID PROJECT ZIP
+      # 7. LOCATE ANDROID PROJECT ZIP
       # ============================================================
 
       - name: Locate TaskMaster Android project ZIP
@@ -178,9 +177,6 @@ jobs:
           echo ""
           echo "Extraction completed."
 
-          echo ""
-          echo "Checking project..."
-
           if [ ! -f "extracted/project/settings.gradle" ]; then
 
             echo ""
@@ -213,7 +209,7 @@ jobs:
 
 
       # ============================================================
-      # 9. NORMALIZE OLD RELEASE CHECKS
+      # 9. NORMALIZE ALL RELEASE CHECKS
       # ============================================================
 
       - name: Normalize release checks to v1.1.1
@@ -229,35 +225,45 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          # IMPORTANT:
+          # qa_check.py is in project root.
+          # Other helper scripts are inside tools/.
+
           files = [
+              Path("qa_check.py"),
               Path("tools/preflight.py"),
-              Path("tools/qa_check.py"),
               Path("tools/release_audit.py"),
               Path("tools/release_manifest.py"),
               Path("tools/final_release_audit.py"),
           ]
 
           replacements = {
+              # Old release combinations
               "1.0.3/14": "1.1.1/22",
               "1.0.9/20": "1.1.1/22",
               "1.0.4/15": "1.1.1/22",
 
+              # Old formatted release combinations
               "1.0.3 (14)": "1.1.1 (22)",
               "1.0.9 (20)": "1.1.1 (22)",
               "1.0.4 (15)": "1.1.1 (22)",
 
+              # Old version names
               "1.0.3": "1.1.1",
               "1.0.9": "1.1.1",
               "1.0.4": "1.1.1",
 
+              # Old version codes
               "versionCode 14": "versionCode 22",
               "versionCode 20": "versionCode 22",
               "versionCode 15": "versionCode 22",
 
+              # Old Gradle version names
               'versionName "1.0.3"': 'versionName "1.1.1"',
               'versionName "1.0.9"': 'versionName "1.1.1"',
               'versionName "1.0.4"': 'versionName "1.1.1"',
 
+              # Old printed version information
               "Version Code : 14": "Version Code : 22",
               "Version Code : 20": "Version Code : 22",
               "Version Code : 15": "Version Code : 22",
@@ -287,14 +293,16 @@ jobs:
                   print(f"OK - {path}")
 
           print("")
-          print("Release checks normalized.")
+          print("==========================================")
+          print("RELEASE CHECK NORMALIZATION COMPLETE")
+          print("==========================================")
           print("Target Version Name : 1.1.1")
           print("Target Version Code : 22")
           PY
 
 
       # ============================================================
-      # 10. VERIFY PROJECT STRUCTURE
+      # 10. VERIFY ANDROID PROJECT STRUCTURE
       # ============================================================
 
       - name: Verify Android project structure
@@ -304,25 +312,29 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "PROJECT STRUCTURE CHECK"
+          echo "ANDROID PROJECT STRUCTURE CHECK"
           echo "=========================================="
 
           test -f settings.gradle
-
           test -f build.gradle
-
           test -f app/build.gradle
 
           test -d app/src/main
 
           test -f app/src/main/AndroidManifest.xml
 
+          test -f qa_check.py
+
+          test -f tools/preflight.py
+          test -f tools/final_build_gate.py
+          test -f tools/final_release_audit.py
+
           echo ""
-          echo "Project structure: PASS"
+          echo "PROJECT STRUCTURE: PASS"
 
 
       # ============================================================
-      # 11. VERIFY VERSION
+      # 11. VERIFY RELEASE VERSION
       # ============================================================
 
       - name: Verify release version
@@ -343,19 +355,23 @@ jobs:
           echo "Version Name:"
           grep -n "versionName" app/build.gradle
 
+          echo ""
+
           grep -q 'versionCode 22' app/build.gradle
 
           grep -q 'versionName "1.1.1"' app/build.gradle
 
-          echo ""
+          echo "=========================================="
           echo "VERSION CHECK: PASS"
+          echo "=========================================="
+
           echo ""
           echo "Version Name : 1.1.1"
           echo "Version Code : 22"
 
 
       # ============================================================
-      # 12. PREFLIGHT CHECKS
+      # 12. RUN PREFLIGHT CHECKS
       # ============================================================
 
       - name: Run preflight checks
@@ -372,7 +388,7 @@ jobs:
 
 
       # ============================================================
-      # 13. FINAL BUILD GATE
+      # 13. RUN FINAL BUILD GATE
       # ============================================================
 
       - name: Run final build gate
@@ -389,7 +405,7 @@ jobs:
 
 
       # ============================================================
-      # 14. FINAL RELEASE AUDIT
+      # 14. RUN FINAL RELEASE AUDIT
       # ============================================================
 
       - name: Run final release audit
@@ -406,7 +422,7 @@ jobs:
 
 
       # ============================================================
-      # 15. GRADLE PROJECT TEST
+      # 15. VERIFY GRADLE PROJECT
       # ============================================================
 
       - name: Verify Gradle project
@@ -425,11 +441,11 @@ jobs:
                  --all
 
           echo ""
-          echo "Gradle project check: PASS"
+          echo "GRADLE PROJECT CHECK: PASS"
 
 
       # ============================================================
-      # 16. BUILD APK
+      # 16. BUILD DEBUG APK
       # ============================================================
 
       - name: Build installable Debug APK
@@ -447,7 +463,7 @@ jobs:
                  :app:assembleDebug
 
           echo ""
-          echo "Gradle APK build completed."
+          echo "GRADLE APK BUILD COMPLETED"
 
 
       # ============================================================
@@ -469,10 +485,10 @@ jobs:
           if [ ! -f "$APK" ]; then
 
             echo ""
-            echo "ERROR: APK was not created."
+            echo "ERROR: APK WAS NOT CREATED."
 
             echo ""
-            echo "Available APK files:"
+            echo "AVAILABLE APK FILES:"
 
             find app/build \
               -type f \
@@ -483,8 +499,10 @@ jobs:
           fi
 
           if [ ! -s "$APK" ]; then
+
             echo ""
-            echo "ERROR: APK file is empty."
+            echo "ERROR: APK FILE IS EMPTY."
+
             exit 1
           fi
 
@@ -497,7 +515,7 @@ jobs:
 
 
       # ============================================================
-      # 18. COPY APK
+      # 18. COPY APK TO WORKSPACE
       # ============================================================
 
       - name: Copy APK to workspace
@@ -513,13 +531,13 @@ jobs:
           cp "$APK" "$OUTPUT"
 
           echo ""
-          echo "APK copied successfully."
+          echo "APK COPIED SUCCESSFULLY"
 
           ls -lh "$OUTPUT"
 
 
       # ============================================================
-      # 19. SHA-256
+      # 19. GENERATE SHA-256
       # ============================================================
 
       - name: Generate SHA-256 checksum
@@ -532,17 +550,17 @@ jobs:
           SHA="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk.sha256"
 
           echo "=========================================="
-          echo "GENERATING SHA-256"
+          echo "GENERATING SHA-256 CHECKSUM"
           echo "=========================================="
 
           sha256sum "$APK" | tee "$SHA"
 
           echo ""
-          echo "SHA-256 generated."
+          echo "SHA-256 GENERATED"
 
 
       # ============================================================
-      # 20. FINAL FILE INTEGRITY CHECK
+      # 20. FINAL APK INTEGRITY CHECK
       # ============================================================
 
       - name: Final APK integrity check
@@ -571,7 +589,7 @@ jobs:
           cat "$SHA"
 
           echo ""
-          echo "Integrity check: PASS"
+          echo "INTEGRITY CHECK: PASS"
 
 
       # ============================================================
@@ -582,6 +600,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TaskMasterProMax-v1.1.1-APK
+
           if-no-files-found: error
 
           path: |
