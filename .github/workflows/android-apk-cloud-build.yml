@@ -2,7 +2,6 @@ name: TaskMaster Pro Max - Android APK Cloud Build
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
@@ -34,6 +33,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
 
       # ============================================================
@@ -45,7 +45,7 @@ jobs:
 
 
       # ============================================================
-      # 4. INSTALL ANDROID SDK 35
+      # 4. INSTALL REQUIRED ANDROID SDK PACKAGES
       # ============================================================
 
       - name: Install Android SDK 35
@@ -53,21 +53,156 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "INSTALLING ANDROID SDK 35"
-          echo "=========================================="
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          sdkmanager "platforms;android-35" \
-                      "build-tools;35.0.0"
-
-          yes | sdkmanager --licenses > /dev/null || true
-
-          echo ""
-          echo "Android SDK 35: READY"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
 
       # ============================================================
-      # 5. GRADLE 8.7
+      # 5. VERIFY V23 ZIP
+      # ============================================================
+
+      - name: Verify V23 Android project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          ZIP="TaskMasterProMax_Android_v23_BuildFix.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: $ZIP was not found in repository root."
+            echo
+            echo "Files available in repository:"
+            ls -lah
+            exit 1
+          fi
+
+          echo "Found:"
+          ls -lh "$ZIP"
+
+          echo
+          echo "SHA-256:"
+          sha256sum "$ZIP"
+
+
+      # ============================================================
+      # 6. EXTRACT PROJECT
+      # ============================================================
+
+      - name: Extract Android project
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -q "TaskMasterProMax_Android_v23_BuildFix.zip" \
+            -d extracted
+
+          echo "Extracted project:"
+          find extracted/project -maxdepth 2 -type f | sort | head -100
+
+
+      # ============================================================
+      # 7. VERIFY PROJECT STRUCTURE
+      # ============================================================
+
+      - name: Verify Android project structure
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/taskmaster/promax/MainActivity.java
+
+          echo "Android project structure: OK"
+
+
+      # ============================================================
+      # 8. VERIFY RELEASE VERSION
+      # ============================================================
+
+      - name: Verify release version
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          grep -q 'versionCode 22' app/build.gradle
+          grep -q 'versionName "1.1.1"' app/build.gradle
+
+          echo "Version verified:"
+          grep -E 'versionCode|versionName' app/build.gradle
+
+
+      # ============================================================
+      # 9. VERIFY JAVA 17 CONFIGURATION
+      # ============================================================
+
+      - name: Verify Java 17 configuration
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          grep -q 'sourceCompatibility JavaVersion.VERSION_17' app/build.gradle
+          grep -q 'targetCompatibility JavaVersion.VERSION_17' app/build.gradle
+
+          grep -q 'org.gradle.jvmargs' gradle.properties
+
+          echo "Java 17 / Gradle configuration: OK"
+
+
+      # ============================================================
+      # 10. RUN PREFLIGHT
+      # ============================================================
+
+      - name: Run preflight checks
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          python3 tools/preflight.py
+
+
+      # ============================================================
+      # 11. RUN FINAL BUILD GATE
+      # ============================================================
+
+      - name: Run final build gate
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          python3 tools/final_build_gate.py
+
+
+      # ============================================================
+      # 12. RUN FINAL RELEASE AUDIT
+      # ============================================================
+
+      - name: Run final release audit
+        shell: bash
+        working-directory: extracted/project
+        run: |
+          set -e
+
+          python3 tools/final_release_audit.py
+
+
+      # ============================================================
+      # 13. VERIFY GRADLE PROJECT
       # ============================================================
 
       - name: Set up Gradle 8.7
@@ -77,581 +212,145 @@ jobs:
 
 
       # ============================================================
-      # 6. VERIFY BUILD ENVIRONMENT
-      # ============================================================
-
-      - name: Verify build environment
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "TASKMASTER PRO MAX"
-          echo "BUILD ENVIRONMENT"
-          echo "=========================================="
-
-          echo ""
-          echo "Java:"
-          java -version
-
-          echo ""
-          echo "Gradle:"
-          gradle --version
-
-          echo ""
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
-
-          echo ""
-          echo "Repository:"
-          pwd
-
-          echo ""
-          echo "Repository files:"
-          ls -lah
-
-
-      # ============================================================
-      # 7. LOCATE PROJECT ZIP
-      # ============================================================
-
-      - name: Locate TaskMaster Android project ZIP
-        shell: bash
-        run: |
-          set -e
-
-          ZIP_FILE="TaskMasterProMax_Android_v22_Cloud_APK_Build.zip"
-
-          echo "=========================================="
-          echo "LOCATING TASKMASTER PROJECT ZIP"
-          echo "=========================================="
-
-          if [ ! -f "$ZIP_FILE" ]; then
-
-            echo ""
-            echo "ERROR: ZIP FILE NOT FOUND"
-            echo ""
-            echo "Expected:"
-            echo "$ZIP_FILE"
-
-            echo ""
-            echo "Available ZIP files:"
-
-            find . \
-              -maxdepth 1 \
-              -type f \
-              -name "*.zip" \
-              -print
-
-            exit 1
-          fi
-
-          echo ""
-          echo "ZIP FOUND:"
-          echo "$ZIP_FILE"
-
-          ls -lh "$ZIP_FILE"
-
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-
-      # ============================================================
-      # 8. EXTRACT PROJECT
-      # ============================================================
-
-      - name: Extract TaskMaster Android project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "EXTRACTING TASKMASTER PROJECT"
-          echo "=========================================="
-
-          rm -rf extracted
-
-          mkdir -p extracted
-
-          unzip -q "$ZIP_FILE" -d extracted
-
-          echo ""
-          echo "Extraction completed."
-
-          if [ ! -f "extracted/project/settings.gradle" ]; then
-
-            echo ""
-            echo "ERROR:"
-            echo "extracted/project/settings.gradle NOT FOUND"
-
-            echo ""
-            echo "Available settings.gradle files:"
-
-            find extracted \
-              -type f \
-              -name "settings.gradle" \
-              -print
-
-            exit 1
-          fi
-
-          if [ ! -f "extracted/project/app/build.gradle" ]; then
-
-            echo ""
-            echo "ERROR:"
-            echo "extracted/project/app/build.gradle NOT FOUND"
-
-            exit 1
-          fi
-
-          echo ""
-          echo "PROJECT FOUND:"
-          echo "extracted/project"
-
-
-      # ============================================================
-      # 9. NORMALIZE RELEASE CHECKS
-      # ============================================================
-
-      - name: Normalize release checks to v1.1.1
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "NORMALIZING RELEASE CHECKS"
-          echo "=========================================="
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          files = [
-              Path("qa_check.py"),
-              Path("tools/preflight.py"),
-              Path("tools/release_audit.py"),
-              Path("tools/release_manifest.py"),
-              Path("tools/final_release_audit.py"),
-          ]
-
-          replacements = {
-              "1.0.3/14": "1.1.1/22",
-              "1.0.9/20": "1.1.1/22",
-              "1.0.4/15": "1.1.1/22",
-
-              "1.0.3 (14)": "1.1.1 (22)",
-              "1.0.9 (20)": "1.1.1 (22)",
-              "1.0.4 (15)": "1.1.1 (22)",
-
-              "1.0.3": "1.1.1",
-              "1.0.9": "1.1.1",
-              "1.0.4": "1.1.1",
-
-              "versionCode 14": "versionCode 22",
-              "versionCode 20": "versionCode 22",
-              "versionCode 15": "versionCode 22",
-
-              'versionName "1.0.3"': 'versionName "1.1.1"',
-              'versionName "1.0.9"': 'versionName "1.1.1"',
-              'versionName "1.0.4"': 'versionName "1.1.1"',
-          }
-
-          for path in files:
-
-              if not path.exists():
-                  print(f"SKIP - {path}")
-                  continue
-
-              text = path.read_text(encoding="utf-8")
-              original = text
-
-              for old, new in replacements.items():
-                  text = text.replace(old, new)
-
-              path.write_text(text, encoding="utf-8")
-
-              if text != original:
-                  print(f"UPDATED - {path}")
-              else:
-                  print(f"OK - {path}")
-
-          print("")
-          print("Release normalization complete.")
-          print("Version Name : 1.1.1")
-          print("Version Code : 22")
-          PY
-
-
-      # ============================================================
-      # 10. VERIFY PROJECT STRUCTURE
-      # ============================================================
-
-      - name: Verify Android project structure
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "ANDROID PROJECT STRUCTURE"
-          echo "=========================================="
-
-          test -f settings.gradle
-          test -f build.gradle
-          test -f app/build.gradle
-          test -d app/src/main
-          test -f app/src/main/AndroidManifest.xml
-
-          test -f qa_check.py
-          test -f tools/preflight.py
-          test -f tools/final_build_gate.py
-          test -f tools/final_release_audit.py
-
-          echo ""
-          echo "PROJECT STRUCTURE: PASS"
-
-
-      # ============================================================
-      # 11. VERIFY RELEASE VERSION
-      # ============================================================
-
-      - name: Verify release version
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "RELEASE VERSION CHECK"
-          echo "=========================================="
-
-          echo ""
-          grep -n "versionCode" app/build.gradle
-
-          echo ""
-          grep -n "versionName" app/build.gradle
-
-          grep -q 'versionCode 22' app/build.gradle
-          grep -q 'versionName "1.1.1"' app/build.gradle
-
-          echo ""
-          echo "VERSION CHECK: PASS"
-          echo "Version Name : 1.1.1"
-          echo "Version Code : 22"
-
-
-      # ============================================================
-      # 12. PREFLIGHT
-      # ============================================================
-
-      - name: Run preflight checks
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "RUNNING PREFLIGHT"
-          echo "=========================================="
-
-          python3 tools/preflight.py
-
-
-      # ============================================================
-      # 13. FINAL BUILD GATE
-      # ============================================================
-
-      - name: Run final build gate
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "RUNNING FINAL BUILD GATE"
-          echo "=========================================="
-
-          python3 tools/final_build_gate.py
-
-
-      # ============================================================
-      # 14. FINAL RELEASE AUDIT
-      # ============================================================
-
-      - name: Run final release audit
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "RUNNING FINAL RELEASE AUDIT"
-          echo "=========================================="
-
-          python3 tools/final_release_audit.py
-
-
-      # ============================================================
-      # 15. VERIFY GRADLE PROJECT
+      # 14. VERIFY GRADLE
       # ============================================================
 
       - name: Verify Gradle project
-        working-directory: extracted/project
         shell: bash
+        working-directory: extracted/project
         run: |
           set -e
 
-          echo "=========================================="
-          echo "GRADLE PROJECT VALIDATION"
-          echo "=========================================="
+          gradle --version
 
           gradle --no-daemon \
-                 --stacktrace \
-                 --console=plain \
-                 tasks \
-                 --all
-
-          echo ""
-          echo "GRADLE PROJECT: PASS"
+            --stacktrace \
+            tasks --all
 
 
       # ============================================================
-      # 16. BUILD DEBUG APK
+      # 15. BUILD DEBUG APK
       # ============================================================
 
       - name: Build installable Debug APK
-        working-directory: extracted/project
         shell: bash
+        working-directory: extracted/project
         run: |
-          set +e
+          set -e
 
-          echo "=========================================="
-          echo "TASKMASTER PRO MAX - APK BUILD"
-          echo "=========================================="
-
-          echo ""
-          echo "Running Gradle assembleDebug..."
-          echo ""
+          echo "============================================"
+          echo "Building TaskMaster Pro Max Debug APK"
+          echo "============================================"
 
           gradle --no-daemon \
-                 --stacktrace \
-                 --console=plain \
-                 :app:assembleDebug \
-                 2>&1 | tee build.log
+            --stacktrace \
+            --warning-mode all \
+            :app:assembleDebug
 
-          BUILD_STATUS=${PIPESTATUS[0]}
-
-          echo ""
-          echo "=========================================="
-          echo "GRADLE EXIT CODE: $BUILD_STATUS"
-          echo "=========================================="
-
-          if [ "$BUILD_STATUS" -eq 0 ]; then
-            echo ""
-            echo "APK BUILD COMMAND: SUCCESS"
-            exit 0
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "APK BUILD FAILED"
-          echo "=========================================="
-
-          echo ""
-          echo "========== WHAT WENT WRONG =========="
-          echo ""
-
-          grep -n -A 20 -B 8 \
-            "What went wrong" \
-            build.log || true
-
-          echo ""
-          echo "========== EXECUTION FAILED =========="
-          echo ""
-
-          grep -n -A 20 -B 8 \
-            "Execution failed" \
-            build.log || true
-
-          echo ""
-          echo "========== COMPILATION ERRORS =========="
-          echo ""
-
-          grep -n -E \
-            "error:|ERROR:|cannot find symbol|does not exist|Could not resolve|Duplicate class|Manifest merger failed|resource .* not found|uses-sdk|failed" \
-            build.log \
-            | tail -150 || true
-
-          echo ""
-          echo "========== LAST 200 LINES =========="
-          echo ""
-
-          tail -200 build.log
-
-          echo ""
-          echo "=========================================="
-          echo "END OF BUILD DIAGNOSTICS"
-          echo "=========================================="
-
-          exit "$BUILD_STATUS"
+          echo
+          echo "BUILD COMPLETED"
 
 
       # ============================================================
-      # 17. VERIFY APK
+      # 16. VERIFY APK
       # ============================================================
 
-      - name: Verify APK
-        working-directory: extracted/project
+      - name: Verify APK output
         shell: bash
+        working-directory: extracted/project
         run: |
           set -e
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK_DIR="app/build/outputs/apk/debug"
 
-          echo "=========================================="
-          echo "APK VERIFICATION"
-          echo "=========================================="
-
-          if [ ! -f "$APK" ]; then
-
-            echo ""
-            echo "ERROR: APK WAS NOT CREATED."
-
-            echo ""
-            echo "AVAILABLE APK FILES:"
-
-            find app/build \
-              -type f \
-              -name "*.apk" \
-              -print
-
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: APK output directory not found."
             exit 1
           fi
 
-          if [ ! -s "$APK" ]; then
+          APK_COUNT=$(find "$APK_DIR" -type f -name "*.apk" | wc -l)
 
-            echo ""
-            echo "ERROR: APK FILE IS EMPTY."
-
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "ERROR: No APK file was produced."
+            find app/build -type f | sort || true
             exit 1
           fi
 
-          echo ""
-          echo "APK BUILD SUCCESS"
-          echo ""
-
-          ls -lh "$APK"
+          echo "APK files:"
+          find "$APK_DIR" -type f -name "*.apk" -exec ls -lh {} \;
 
 
       # ============================================================
-      # 18. COPY APK
+      # 17. PREPARE APK
       # ============================================================
 
-      - name: Copy APK to workspace
-        working-directory: extracted/project
+      - name: Prepare APK artifact
         shell: bash
         run: |
           set -e
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          mkdir -p release
 
-          OUTPUT="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk"
+          APK=$(find extracted/project/app/build/outputs/apk/debug \
+            -type f \
+            -name "*.apk" \
+            | head -1)
 
-          cp "$APK" "$OUTPUT"
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not found."
+            exit 1
+          fi
 
-          echo ""
-          echo "APK COPIED SUCCESSFULLY"
+          cp "$APK" "release/TaskMasterProMax-v1.1.1-debug.apk"
 
-          ls -lh "$OUTPUT"
+          ls -lh release/
 
 
       # ============================================================
-      # 19. SHA-256
+      # 18. GENERATE SHA-256
       # ============================================================
 
-      - name: Generate SHA-256 checksum
+      - name: Generate APK SHA-256
         shell: bash
         run: |
           set -e
 
-          APK="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk"
+          sha256sum release/TaskMasterProMax-v1.1.1-debug.apk \
+            | tee release/SHA256SUM.txt
 
-          SHA="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk.sha256"
-
-          echo "=========================================="
-          echo "GENERATING SHA-256"
-          echo "=========================================="
-
-          sha256sum "$APK" | tee "$SHA"
-
-          echo ""
-          echo "SHA-256 GENERATED"
+          echo
+          echo "APK SHA-256 generated."
 
 
       # ============================================================
-      # 20. FINAL APK INTEGRITY CHECK
-      # ============================================================
-
-      - name: Final APK integrity check
-        shell: bash
-        run: |
-          set -e
-
-          APK="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk"
-
-          SHA="$GITHUB_WORKSPACE/TaskMasterProMax-v1.1.1-debug.apk.sha256"
-
-          test -s "$APK"
-          test -s "$SHA"
-
-          echo "=========================================="
-          echo "FINAL APK INTEGRITY CHECK"
-          echo "=========================================="
-
-          echo ""
-          echo "APK:"
-          ls -lh "$APK"
-
-          echo ""
-          echo "SHA-256:"
-          cat "$SHA"
-
-          echo ""
-          echo "INTEGRITY CHECK: PASS"
-
-
-      # ============================================================
-      # 21. UPLOAD APK ARTIFACT
+      # 19. UPLOAD APK
       # ============================================================
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: TaskMasterProMax-v1.1.1-APK
-          if-no-files-found: error
           path: |
-            TaskMasterProMax-v1.1.1-debug.apk
-            TaskMasterProMax-v1.1.1-debug.apk.sha256
+            release/TaskMasterProMax-v1.1.1-debug.apk
+            release/SHA256SUM.txt
+          if-no-files-found: error
 
 
       # ============================================================
-      # 22. FINAL SUCCESS
+      # 20. FINAL SUCCESS
       # ============================================================
 
-      - name: FINAL SUCCESS
+      - name: Final build success
         shell: bash
         run: |
-          echo ""
-          echo "=================================================="
-          echo "          TASKMASTER PRO MAX"
-          echo "          APK BUILD SUCCESS"
-          echo "=================================================="
-          echo ""
-          echo "Version      : 1.1.1"
+          echo
+          echo "================================================"
+          echo " TASKMASTER PRO MAX APK BUILD SUCCESS"
+          echo "================================================"
+          echo
+          echo "Version : 1.1.1"
           echo "Version Code : 22"
-          echo ""
-          echo "APK          : TaskMasterProMax-v1.1.1-debug.apk"
-          echo "Artifact     : TaskMasterProMax-v1.1.1-APK"
-          echo ""
-          echo "=================================================="
-          echo "          BUILD COMPLETED SUCCESSFULLY"
-          echo "=================================================="
+          echo "APK : TaskMasterProMax-v1.1.1-debug.apk"
+          echo
+          echo "The APK is available in GitHub Actions Artifacts."
+          echo
