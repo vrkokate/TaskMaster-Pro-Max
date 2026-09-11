@@ -17,19 +17,19 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. CHECKOUT
+      # 1. CHECKOUT (Fixed to v4)
       # ============================================================
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
 
       # ============================================================
-      # 2. JAVA 17
+      # 2. JAVA 17 (Fixed to v4)
       # ============================================================
 
       - name: Set up Java 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -46,11 +46,11 @@ jobs:
 
 
       # ============================================================
-      # 4. GRADLE 8.7
+      # 4. GRADLE 8.7 (Fixed to v4)
       # ============================================================
 
       - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
@@ -104,7 +104,6 @@ jobs:
           set -e
 
           rm -rf extracted
-
           mkdir -p extracted
 
           unzip -q \
@@ -128,17 +127,14 @@ jobs:
           set -e
 
           echo "Checking release version..."
-
-          grep -q 'versionCode 22' app/build.gradle
-          grep -q 'versionName "1.1.1"' app/build.gradle
+          grep -E 'versionCode[[:space:]]+=?22' app/build.gradle
+          grep -E 'versionName[[:space:]]+=?["\x27]1.1.1["\x27]' app/build.gradle
 
           echo "Checking Java 17..."
-
           grep -q 'sourceCompatibility JavaVersion.VERSION_17' app/build.gradle
           grep -q 'targetCompatibility JavaVersion.VERSION_17' app/build.gradle
 
           echo "Checking Gradle properties..."
-
           grep -q 'org.gradle.jvmargs' gradle.properties
 
           echo
@@ -270,11 +266,11 @@ jobs:
 
 
       # ============================================================
-      # 16. UPLOAD APK
+      # 16. UPLOAD APK (Fixed to v4)
       # ============================================================
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: TaskMasterProMax-v1.1.1-APK
           if-no-files-found: error
