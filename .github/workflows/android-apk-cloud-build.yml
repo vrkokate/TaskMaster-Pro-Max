@@ -17,11 +17,11 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. CHECKOUT REPOSITORY
+      # 1. CHECKOUT
       # ============================================================
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
 
       # ============================================================
@@ -29,7 +29,7 @@ jobs:
       # ============================================================
 
       - name: Set up Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -59,15 +59,13 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          echo "Android SDK 35 installed successfully."
-
 
       # ============================================================
-      # 5. GRADLE 8.7
+      # 5. SETUP GRADLE 8.7
       # ============================================================
 
       - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
 
@@ -81,11 +79,11 @@ jobs:
         run: |
           set -e
 
-          echo "===== JAVA ====="
+          echo "Java:"
           java -version
 
           echo
-          echo "===== GRADLE ====="
+          echo "Gradle:"
           gradle --version
 
 
@@ -93,56 +91,76 @@ jobs:
       # 7. FIND ANDROID PROJECT ZIP
       #
       # IMPORTANT:
-      # Do NOT use V22/V23/V24 exact filename.
-      # The workflow automatically finds the newest
-      # TaskMasterProMax_Android_*.zip in repository root.
+      # Do NOT require a specific V22/V23/V24 filename.
+      # The newest matching ZIP in repository will be selected.
       # ============================================================
 
-      - name: Find TaskMaster Android project ZIP
-        id: find_zip
+      - name: Find Android project ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Searching repository root for Android project ZIP..."
+          echo "Searching for TaskMaster Android project ZIP..."
 
-          ZIP=$(find . \
-            -maxdepth 1 \
-            -type f \
-            -name 'TaskMasterProMax_Android_*.zip' \
-            -printf '%f\n' \
-            | sort -V \
-            | tail -n 1)
+          mapfile -t ZIPS < <(
+            find . -maxdepth 1 -type f \
+              -name 'TaskMasterProMax_Android_*.zip' \
+              -printf '%f\n' \
+              | sort -V
+          )
 
-          if [ -z "$ZIP" ]; then
+          if [ "${#ZIPS[@]}" -eq 0 ]; then
             echo
             echo "ERROR: No TaskMaster Android project ZIP found."
             echo
-            echo "Repository root contents:"
+            echo "Repository files:"
             ls -lah
             exit 1
           fi
 
-          echo
-          echo "=============================================="
-          echo "ANDROID PROJECT ZIP SELECTED"
-          echo "=============================================="
-          echo "$ZIP"
-          echo
+          ZIP_NAME="${ZIPS[${#ZIPS[@]}-1]}"
 
-          echo "zip_name=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "ZIP files found:"
+          printf '%s\n' "${ZIPS[@]}"
 
-          echo "ZIP SHA-256:"
-          sha256sum "$ZIP"
+          echo
+          echo "Selected project:"
+          echo "$ZIP_NAME"
+
+          echo "PROJECT_ZIP=$ZIP_NAME" >> "$GITHUB_ENV"
 
 
       # ============================================================
-      # 8. EXTRACT PROJECT
+      # 8. VERIFY ZIP
+      # ============================================================
+
+      - name: Verify selected ZIP
+        shell: bash
+        run: |
+          set -e
+
+          test -f "$PROJECT_ZIP"
+
+          echo "Selected ZIP:"
+          ls -lh "$PROJECT_ZIP"
+
+          echo
+          echo "SHA-256:"
+          sha256sum "$PROJECT_ZIP"
+
+          echo
+          echo "ZIP integrity test:"
+
+          unzip -t "$PROJECT_ZIP" >/dev/null
+
+          echo "ZIP integrity: PASS"
+
+
+      # ============================================================
+      # 9. EXTRACT PROJECT
       # ============================================================
 
       - name: Extract Android project
-        env:
-          ZIP_NAME: ${{ steps.find_zip.outputs.zip_name }}
         shell: bash
         run: |
           set -e
@@ -150,281 +168,328 @@ jobs:
           rm -rf extracted
           mkdir -p extracted
 
-          echo "Extracting:"
-          echo "$ZIP_NAME"
+          unzip -q "$PROJECT_ZIP" -d extracted
 
-          unzip -q "$ZIP_NAME" -d extracted
-
-          echo
-          echo "Checking extracted project..."
-
-          if [ ! -f extracted/project/settings.gradle ]; then
-            echo "ERROR: settings.gradle not found."
-            echo
-            find extracted -maxdepth 4 -type f | sort | head -300
-            exit 1
-          fi
-
-          if [ ! -f extracted/project/app/build.gradle ]; then
-            echo "ERROR: app/build.gradle not found."
-            exit 1
-          fi
-
-          echo "Project extraction: PASS"
+          echo "Extracted top-level structure:"
+          find extracted -maxdepth 2 -type f | sort | head -100
 
 
       # ============================================================
-      # 9. SYNCHRONIZE RELEASE VERSION
+      # 10. DETERMINE PROJECT DIRECTORY
       #
-      # This prevents old V22 QA scripts from stopping the build
-      # because of historical version numbers.
+      # Supports:
+      # extracted/project/
+      # OR
+      # extracted/
       # ============================================================
 
-      - name: Synchronize release version 1.1.1 / 22
-        working-directory: extracted/project
+      - name: Determine project directory
         shell: bash
         run: |
           set -e
 
-          echo "Synchronizing release metadata..."
+          if [ -f "extracted/project/settings.gradle" ] \
+             && [ -f "extracted/project/app/build.gradle" ]; then
 
-          # --------------------------------------------------------
-          # app/build.gradle
-          # --------------------------------------------------------
+            PROJECT_DIR="extracted/project"
+
+          elif [ -f "extracted/settings.gradle" ] \
+               && [ -f "extracted/app/build.gradle" ]; then
+
+            PROJECT_DIR="extracted"
+
+          else
+            echo "ERROR: Android Gradle project could not be located."
+
+            echo
+            echo "Extracted files:"
+            find extracted -maxdepth 4 -type f | sort
+
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "Android project directory:"
+          echo "$PROJECT_DIR"
+
+
+      # ============================================================
+      # 11. NORMALIZE PROJECT FOR FINAL RELEASE 1.1.1 / 22
+      #
+      # This removes old CI/version mismatches from older ZIPs.
+      # ============================================================
+
+      - name: Normalize project CI configuration
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
 
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          p = Path("app/build.gradle")
-          s = p.read_text(encoding="utf-8")
+          root = Path(".")
 
-          s = re.sub(
+          # --------------------------------------------------------
+          # 1. app/build.gradle
+          # --------------------------------------------------------
+
+          gradle = Path("app/build.gradle")
+
+          text = gradle.read_text(encoding="utf-8")
+
+          text = re.sub(
               r'versionCode\s+\d+',
               'versionCode 22',
-              s,
+              text,
               count=1
           )
 
-          s = re.sub(
+          text = re.sub(
               r'versionName\s+"[^"]+"',
               'versionName "1.1.1"',
-              s,
+              text,
               count=1
           )
 
-          p.write_text(s, encoding="utf-8")
+          if "sourceCompatibility JavaVersion.VERSION_17" not in text:
+              marker = "    buildTypes {"
+
+              java_block = """    // CI Java 17 compatibility
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+          """
+
+              if marker in text:
+                  text = text.replace(marker, java_block + marker, 1)
+              else:
+                  raise SystemExit(
+                      "ERROR: buildTypes marker not found in app/build.gradle"
+                  )
+
+          gradle.write_text(text, encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # 2. gradle.properties
+          # --------------------------------------------------------
+
+          props = Path("gradle.properties")
+
+          existing = props.read_text(encoding="utf-8") \
+              if props.exists() else ""
+
+          required = [
+              "org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8",
+              "org.gradle.daemon=false",
+              "org.gradle.parallel=false",
+              "android.useAndroidX=true",
+              "android.enableJetifier=false",
+              "android.nonTransitiveRClass=false",
+          ]
+
+          lines = existing.splitlines()
+
+          for item in required:
+              key = item.split("=", 1)[0]
+
+              if not any(
+                  line.startswith(key + "=")
+                  for line in lines
+              ):
+                  lines.append(item)
+
+          props.write_text(
+              "\n".join(lines).rstrip() + "\n",
+              encoding="utf-8"
+          )
+
+
+          # --------------------------------------------------------
+          # 3. preflight.py
+          # --------------------------------------------------------
+
+          p = Path("tools/preflight.py")
+
+          if p.exists():
+              s = p.read_text(encoding="utf-8")
+
+              s = s.replace(
+                  "ok('Release version 1.0.3/14', 'versionCode 14' in gradle and 'versionName \"1.0.3\"' in gradle)",
+                  "ok('Release version 1.1.1/22', 'versionCode 22' in gradle and 'versionName \"1.1.1\"' in gradle)"
+              )
+
+              p.write_text(s, encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # 4. qa_check.py
+          # --------------------------------------------------------
+
+          p = Path("qa_check.py")
+
+          if p.exists():
+              s = p.read_text(encoding="utf-8")
+
+              s = s.replace(
+                  "versionCode 20",
+                  "versionCode 22"
+              )
+
+              s = s.replace(
+                  'versionName "1.0.9"',
+                  'versionName "1.1.1"'
+              )
+
+              s = s.replace(
+                  "TaskMaster Pro Max v1.0.9 (20)",
+                  "TaskMaster Pro Max v1.1.1 (22)"
+              )
+
+              p.write_text(s, encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # 5. release_audit.py
+          # --------------------------------------------------------
+
+          p = Path("tools/release_audit.py")
+
+          if p.exists():
+              s = p.read_text(encoding="utf-8")
+
+              s = s.replace(
+                  "ok('Version 1.0.4 / code 15', 'versionCode 16' in text and 'versionName \"1.0.5\"' in text)",
+                  "ok('Version 1.1.1 / code 22', 'versionCode 22' in text and 'versionName \"1.1.1\"' in text)"
+              )
+
+              p.write_text(s, encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # 6. release_manifest.py
+          # --------------------------------------------------------
+
+          p = Path("tools/release_manifest.py")
+
+          if p.exists():
+              s = p.read_text(encoding="utf-8")
+
+              s = re.sub(
+                  r"'version':\s*'[^']+'",
+                  "'version':'1.1.1'",
+                  s
+              )
+
+              s = re.sub(
+                  r"'versionCode':\s*\d+",
+                  "'versionCode':22",
+                  s
+              )
+
+              p.write_text(s, encoding="utf-8")
+
+
+          print("PROJECT NORMALIZATION: PASS")
           PY
 
 
-          # --------------------------------------------------------
-          # Known QA / release helper scripts
-          # --------------------------------------------------------
-
-          for FILE in \
-            qa_check.py \
-            tools/preflight.py \
-            tools/final_build_gate.py \
-            tools/final_release_audit.py \
-            tools/release_audit.py \
-            tools/release_manifest.py
-          do
-            if [ -f "$FILE" ]; then
-
-              sed -i \
-                -e 's/versionCode 20/versionCode 22/g' \
-                -e 's/versionCode 14/versionCode 22/g' \
-                -e 's/versionCode 15/versionCode 22/g' \
-                -e 's/versionCode 1/versionCode 22/g' \
-                -e 's/1\.0\.9/1.1.1/g' \
-                -e 's/1\.0\.4/1.1.1/g' \
-                -e 's/1\.0\.3/1.1.1/g' \
-                "$FILE"
-
-              echo "Synchronized: $FILE"
-            fi
-          done
-
-
-          # --------------------------------------------------------
-          # gradle.properties
-          # --------------------------------------------------------
-
-          cat > gradle.properties <<'EOF'
-# TaskMaster Pro Max CI configuration
-
-org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-org.gradle.daemon=false
-org.gradle.parallel=false
-
-android.useAndroidX=true
-android.enableJetifier=false
-android.nonTransitiveRClass=false
-EOF
-
-
-          echo
-          echo "Release synchronization completed."
-
-
       # ============================================================
-      # 10. FORCE JAVA 17 COMPILE OPTIONS
+      # 12. VERIFY FINAL CONFIGURATION
       # ============================================================
 
-      - name: Verify and enforce Java 17 compile options
-        working-directory: extracted/project
+      - name: Verify final project configuration
         shell: bash
         run: |
           set -e
 
-          python3 - <<'PY'
-          from pathlib import Path
+          cd "$PROJECT_DIR"
 
-          p = Path("app/build.gradle")
-          s = p.read_text(encoding="utf-8")
-
-          if "compileOptions" not in s:
-              marker = "android {"
-              block = """android {
-          compileOptions {
-              sourceCompatibility JavaVersion.VERSION_17
-              targetCompatibility JavaVersion.VERSION_17
-          }
-          """
-              if marker not in s:
-                  raise SystemExit("ERROR: android block not found in app/build.gradle")
-
-              s = s.replace(marker, block, 1)
-
-          elif "sourceCompatibility JavaVersion.VERSION_17" not in s:
-              marker = "compileOptions {"
-              replacement = """compileOptions {
-              sourceCompatibility JavaVersion.VERSION_17
-              targetCompatibility JavaVersion.VERSION_17
-          """
-              if marker not in s:
-                  raise SystemExit("ERROR: compileOptions block could not be located")
-
-              start = s.index(marker)
-              end = s.index("}", start)
-
-              old = s[start:end+1]
-
-              s = s[:start] + replacement + "\n          }" + s[end+1:]
-
-          p.write_text(s, encoding="utf-8")
-          PY
-
-          echo
-          echo "Java 17 compile configuration:"
-          grep -A5 -B1 "compileOptions" app/build.gradle || true
-
-
-      # ============================================================
-      # 11. VERIFY PROJECT STRUCTURE
-      # ============================================================
-
-      - name: Verify Android project structure
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
-
-          test -f settings.gradle
-          test -f build.gradle
-          test -f gradle.properties
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/java/com/taskmaster/promax/MainActivity.java
-
-          echo "=============================================="
-          echo "PROJECT STRUCTURE: PASS"
-          echo "=============================================="
-
-
-      # ============================================================
-      # 12. VERIFY VERSION
-      # ============================================================
-
-      - name: Verify release version
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
+          echo "Checking version..."
 
           grep -q 'versionCode 22' app/build.gradle
           grep -q 'versionName "1.1.1"' app/build.gradle
 
-          echo "Version      : 1.1.1"
-          echo "Version Code : 22"
-          echo "Release verification: PASS"
+          echo "Checking compileSdk..."
 
+          grep -q 'compileSdk 35' app/build.gradle
 
-      # ============================================================
-      # 13. VERIFY JAVA 17
-      # ============================================================
+          echo "Checking targetSdk..."
 
-      - name: Verify Java 17 configuration
-        working-directory: extracted/project
-        shell: bash
-        run: |
-          set -e
+          grep -q 'targetSdk 35' app/build.gradle
+
+          echo "Checking Java 17..."
 
           grep -q 'sourceCompatibility JavaVersion.VERSION_17' app/build.gradle
           grep -q 'targetCompatibility JavaVersion.VERSION_17' app/build.gradle
-          grep -q 'org.gradle.jvmargs' gradle.properties
 
-          echo "Java 17 configuration: PASS"
+          echo "Checking Gradle properties..."
+
+          test -s gradle.properties
+
+          echo
+          echo "FINAL PROJECT CONFIGURATION: PASS"
 
 
       # ============================================================
-      # 14. PREFLIGHT
+      # 13. PREFLIGHT
       # ============================================================
 
       - name: Run preflight checks
-        working-directory: extracted/project
         shell: bash
         run: |
           set -e
+
+          cd "$PROJECT_DIR"
 
           python3 tools/preflight.py
 
 
       # ============================================================
-      # 15. FINAL BUILD GATE
+      # 14. FINAL BUILD GATE
       # ============================================================
 
       - name: Run final build gate
-        working-directory: extracted/project
         shell: bash
         run: |
           set -e
+
+          cd "$PROJECT_DIR"
 
           python3 tools/final_build_gate.py
 
 
       # ============================================================
-      # 16. FINAL RELEASE AUDIT
+      # 15. FINAL RELEASE AUDIT
       # ============================================================
 
       - name: Run final release audit
-        working-directory: extracted/project
         shell: bash
         run: |
           set -e
+
+          cd "$PROJECT_DIR"
 
           python3 tools/final_release_audit.py
 
 
       # ============================================================
-      # 17. GRADLE PROJECT TEST
+      # 16. VERIFY GRADLE PROJECT
       # ============================================================
 
       - name: Verify Gradle project
-        working-directory: extracted/project
         shell: bash
         run: |
           set -e
+
+          cd "$PROJECT_DIR"
 
           gradle \
             --no-daemon \
@@ -433,127 +498,106 @@ EOF
 
 
       # ============================================================
-      # 18. BUILD APK
+      # 17. BUILD DEBUG APK
       # ============================================================
 
       - name: Build installable Debug APK
-        working-directory: extracted/project
         shell: bash
         run: |
-          set -o pipefail
+          set -e
+
+          cd "$PROJECT_DIR"
 
           echo
-          echo "================================================"
+          echo "=============================================="
           echo " TASKMASTER PRO MAX APK BUILD"
           echo " Version      : 1.1.1"
           echo " Version Code : 22"
-          echo "================================================"
+          echo "=============================================="
           echo
 
           gradle \
             --no-daemon \
             --stacktrace \
             --warning-mode all \
-            :app:assembleDebug \
-            2>&1 | tee "$GITHUB_WORKSPACE/gradle-build.log"
+            :app:assembleDebug
 
           echo
-          echo "APK BUILD COMMAND COMPLETED."
+          echo "APK BUILD COMMAND COMPLETED"
 
 
       # ============================================================
-      # 19. VERIFY APK
+      # 18. VERIFY APK
       # ============================================================
 
       - name: Verify APK output
-        if: success()
-        working-directory: extracted/project
         shell: bash
         run: |
           set -e
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not created."
+            echo "ERROR: app-debug.apk was not created."
+
             echo
-            echo "Available build files:"
-            find app/build -type f | sort || true
+            echo "Available APK files:"
+            find "$PROJECT_DIR/app/build" \
+              -type f \
+              -name "*.apk" \
+              -print || true
+
             exit 1
           fi
 
           echo
-          echo "=============================================="
-          echo "APK CREATED SUCCESSFULLY"
-          echo "=============================================="
+          echo "APK CREATED SUCCESSFULLY:"
           ls -lh "$APK"
 
 
       # ============================================================
-      # 20. PREPARE RELEASE
+      # 19. PREPARE RELEASE ARTIFACT
       # ============================================================
 
       - name: Prepare APK artifact
-        if: success()
         shell: bash
         run: |
           set -e
 
-          rm -rf release
           mkdir -p release
 
           cp \
-            extracted/project/app/build/outputs/apk/debug/app-debug.apk \
-            release/TaskMasterProMax-v1.1.1-debug.apk
+            "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" \
+            "release/TaskMasterProMax-v1.1.1-debug.apk"
 
           sha256sum \
-            release/TaskMasterProMax-v1.1.1-debug.apk \
-            | tee release/SHA256SUM.txt
+            "release/TaskMasterProMax-v1.1.1-debug.apk" \
+            | tee "release/SHA256SUM.txt"
 
           echo
-          echo "Release package:"
+          echo "Release artifact:"
           ls -lh release/
 
 
       # ============================================================
-      # 21. UPLOAD APK
+      # 20. UPLOAD APK
       # ============================================================
 
       - name: Upload APK artifact
-        if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: TaskMasterProMax-v1.1.1-APK
-          if-no-files-found: error
           path: |
             release/TaskMasterProMax-v1.1.1-debug.apk
             release/SHA256SUM.txt
+          if-no-files-found: error
 
 
       # ============================================================
-      # 22. FAILURE DIAGNOSTICS
-      #
-      # If Gradle fails, preserve the actual log and reports.
+      # 21. FINAL SUCCESS
       # ============================================================
 
-      - name: Upload build diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: TaskMasterProMax-build-diagnostics
-          if-no-files-found: ignore
-          path: |
-            gradle-build.log
-            extracted/project/app/build/reports/**
-            extracted/project/app/build/outputs/logs/**
-
-
-      # ============================================================
-      # 23. FINAL SUCCESS
-      # ============================================================
-
-      - name: Final success
-        if: success()
+      - name: Final build success
         shell: bash
         run: |
           echo
@@ -565,6 +609,5 @@ EOF
           echo "Version Code : 22"
           echo "APK          : TaskMasterProMax-v1.1.1-debug.apk"
           echo
-          echo "APK is available in GitHub Actions Artifacts."
+          echo "Download the APK from GitHub Actions Artifacts."
           echo
-          echo "================================================"
