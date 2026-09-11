@@ -79,24 +79,26 @@ jobs:
         run: |
           set -e
 
-          echo "===== JAVA ====="
+          echo "========== JAVA =========="
           java -version
 
           echo
-          echo "===== GRADLE ====="
+          echo "========== GRADLE =========="
           gradle --version
 
 
       # ============================================================
       # 7. FIND PROJECT ZIP
+      #
+      # Do not depend on V22/V23/V24/V25 filename.
       # ============================================================
 
-      - name: Find TaskMaster Android project
+      - name: Find TaskMaster Android project ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Searching repository for Android project ZIP..."
+          echo "Searching for TaskMaster Android project..."
 
           mapfile -t ZIPS < <(
             find . -maxdepth 1 -type f \
@@ -107,7 +109,7 @@ jobs:
 
           if [ "${#ZIPS[@]}" -eq 0 ]; then
             echo
-            echo "ERROR: No TaskMasterProMax Android ZIP found."
+            echo "ERROR: No TaskMasterProMax Android project ZIP found."
             echo
             echo "Repository contents:"
             ls -lah
@@ -115,13 +117,13 @@ jobs:
           fi
 
           echo
-          echo "ZIP files found:"
+          echo "Available project ZIP files:"
           printf '%s\n' "${ZIPS[@]}"
 
           ZIP_NAME="${ZIPS[${#ZIPS[@]}-1]}"
 
           echo
-          echo "Selected project ZIP:"
+          echo "Selected project:"
           echo "$ZIP_NAME"
 
           echo "PROJECT_ZIP=$ZIP_NAME" >> "$GITHUB_ENV"
@@ -138,11 +140,11 @@ jobs:
 
           test -f "$PROJECT_ZIP"
 
-          echo "ZIP:"
+          echo "Selected ZIP:"
           ls -lh "$PROJECT_ZIP"
 
           echo
-          echo "ZIP SHA-256:"
+          echo "SHA-256:"
           sha256sum "$PROJECT_ZIP"
 
           echo
@@ -172,7 +174,7 @@ jobs:
 
 
       # ============================================================
-      # 10. FIND PROJECT DIRECTORY
+      # 10. FIND GRADLE PROJECT
       # ============================================================
 
       - name: Determine Android project directory
@@ -186,7 +188,7 @@ jobs:
             PROJECT_DIR="extracted/project"
 
           elif [ -f "extracted/settings.gradle" ] \
-               && [ -f "extracted/app/build.gradle" ]; then
+             && [ -f "extracted/app/build.gradle" ]; then
 
             PROJECT_DIR="extracted"
 
@@ -205,22 +207,17 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo
-          echo "PROJECT_DIR:"
+          echo "Android project:"
           echo "$PROJECT_DIR"
 
 
       # ============================================================
-      # 11. FINAL PROJECT NORMALIZATION
+      # 11. COMPLETE SOURCE REPAIR
       #
-      # This fixes:
-      # - Version
-      # - Java 17
-      # - Gradle properties
-      # - Room String primary keys
-      # - Old QA version checks
+      # All known source/configuration fixes are applied together.
       # ============================================================
 
-      - name: Normalize and repair project
+      - name: Repair and normalize complete project
         shell: bash
         run: |
           set -e
@@ -231,22 +228,27 @@ jobs:
           from pathlib import Path
           import re
 
-          print("==============================================")
-          print(" FINAL PROJECT NORMALIZATION")
-          print("==============================================")
+          print()
+          print("================================================")
+          print(" TASKMASTER PRO MAX FINAL SOURCE REPAIR")
+          print("================================================")
 
-          # ----------------------------------------------------------
-          # APP BUILD.GRADLE
-          # ----------------------------------------------------------
+
+          # ========================================================
+          # A. APP BUILD.GRADLE
+          # ========================================================
 
           p = Path("app/build.gradle")
 
           if not p.exists():
-              raise SystemExit("ERROR: app/build.gradle not found.")
+              raise SystemExit(
+                  "ERROR: app/build.gradle not found."
+              )
 
           s = p.read_text(encoding="utf-8")
 
-          # Final release version
+
+          # Final version
           s = re.sub(
               r'versionCode\s+\d+',
               'versionCode 22',
@@ -261,8 +263,13 @@ jobs:
               count=1
           )
 
+
           # Java 17
-          if "sourceCompatibility JavaVersion.VERSION_17" not in s:
+          if (
+              "sourceCompatibility JavaVersion.VERSION_17"
+              not in s
+          ):
+
               marker = "    buildTypes {"
 
               java_block = """    compileOptions {
@@ -274,7 +281,7 @@ jobs:
 
               if marker not in s:
                   raise SystemExit(
-                      "ERROR: Could not insert Java 17 compileOptions."
+                      "ERROR: Cannot add Java 17 configuration."
                   )
 
               s = s.replace(
@@ -283,12 +290,15 @@ jobs:
                   1
               )
 
+
           p.write_text(s, encoding="utf-8")
 
+          print("APP BUILD.GRADLE: PASS")
 
-          # ----------------------------------------------------------
-          # GRADLE.PROPERTIES
-          # ----------------------------------------------------------
+
+          # ========================================================
+          # B. GRADLE.PROPERTIES
+          # ========================================================
 
           p = Path("gradle.properties")
 
@@ -323,7 +333,8 @@ jobs:
           for key, value in required.items():
 
               lines = [
-                  line for line in lines
+                  line
+                  for line in lines
                   if not line.startswith(key + "=")
               ]
 
@@ -334,14 +345,12 @@ jobs:
               encoding="utf-8"
           )
 
+          print("GRADLE.PROPERTIES: PASS")
 
-          # ----------------------------------------------------------
-          # ROOM PRIMARY KEY FIX
-          #
-          # CRITICAL FIX FROM ACTUAL BUILD ERROR
-          #
-          # Room requires String primary keys to be @NonNull.
-          # ----------------------------------------------------------
+
+          # ========================================================
+          # C. ROOM PRIMARY KEY FIX
+          # ========================================================
 
           entity_dir = Path(
               "app/src/main/java/com/taskmaster/promax"
@@ -359,13 +368,17 @@ jobs:
 
               if not p.exists():
                   raise SystemExit(
-                      f"ERROR: Required entity missing: {filename}"
+                      f"ERROR: Missing entity: {filename}"
                   )
 
               s = p.read_text(encoding="utf-8")
 
-              # Add NonNull import
-              if "import androidx.annotation.NonNull;" not in s:
+
+              # Add @NonNull import
+              if (
+                  "import androidx.annotation.NonNull;"
+                  not in s
+              ):
 
                   package_line = (
                       "package com.taskmaster.promax;"
@@ -373,53 +386,146 @@ jobs:
 
                   if package_line not in s:
                       raise SystemExit(
-                          f"ERROR: Package declaration not found in {filename}"
+                          f"ERROR: Package declaration missing in {filename}"
                       )
 
                   s = s.replace(
                       package_line,
                       package_line
-                      + "\n\nimport androidx.annotation.NonNull;",
+                      + "\n\n"
+                      + "import androidx.annotation.NonNull;",
                       1
                   )
 
-              # Fix primary key
-              old = f"@PrimaryKey public String {field};"
 
-              new = (
-                  f"@PrimaryKey @NonNull public String {field};"
-              )
-
-              s = s.replace(old, new)
-
-              # Also handle split annotation formatting
+              # Normalize primary-key declaration
               pattern = (
                   r'@PrimaryKey\s+'
-                  rf'public\s+String\s+{re.escape(field)}\s*;'
+                  rf'public\s+String\s+'
+                  rf'{re.escape(field)}\s*;'
+              )
+
+              replacement = (
+                  f"@PrimaryKey @NonNull "
+                  f"public String {field};"
               )
 
               s = re.sub(
                   pattern,
-                  new,
+                  replacement,
                   s,
                   count=1
               )
 
-              if new not in s:
+
+              # Existing already-fixed form
+              if replacement not in s:
                   raise SystemExit(
-                      f"ERROR: Room primary-key fix failed in {filename}"
+                      f"ERROR: Room primary key repair failed: {filename}"
                   )
+
 
               p.write_text(s, encoding="utf-8")
 
               print(
-                  f"ROOM FIX PASS: {filename} -> {field}"
+                  f"ROOM PRIMARY KEY: {filename} -> PASS"
               )
 
 
-          # ----------------------------------------------------------
-          # OLD QA VERSION NORMALIZATION
-          # ----------------------------------------------------------
+          # ========================================================
+          # D. CRITICAL DAO FIX
+          #
+          # Actual error found in latest GitHub build:
+          #
+          # @Query(... :now ...)
+          # int countOverdue();
+          #
+          # Must be:
+          #
+          # int countOverdue(long now);
+          # ========================================================
+
+          p = entity_dir / "TaskDao.java"
+
+          if not p.exists():
+              raise SystemExit(
+                  "ERROR: TaskDao.java not found."
+              )
+
+          s = p.read_text(encoding="utf-8")
+
+
+          old_method = """
+              @Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
+              int countOverdue();
+          """
+
+          new_method = """
+              @Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
+              int countOverdue(long now);
+          """
+
+
+          if old_method in s:
+
+              s = s.replace(
+                  old_method,
+                  new_method,
+                  1
+              )
+
+          else:
+
+              # Handle different whitespace formatting
+              pattern = (
+                  r'(@Query\("SELECT COUNT\(\*\) FROM tasks '
+                  r'WHERE status!=\'COMPLETED\' AND dueAt < :now"\)'
+                  r'\s*)'
+                  r'int\s+countOverdue\s*\(\s*\)\s*;'
+              )
+
+              replacement = (
+                  r'\1int countOverdue(long now);'
+              )
+
+              s, count = re.subn(
+                  pattern,
+                  replacement,
+                  s,
+                  count=1
+              )
+
+              if count == 0:
+
+                  # It may already be fixed.
+                  if not re.search(
+                      r'int\s+countOverdue\s*\(\s*long\s+now\s*\)',
+                      s
+                  ):
+                      raise SystemExit(
+                          "ERROR: Could not repair TaskDao.countOverdue()."
+                      )
+
+
+          if not re.search(
+              r'int\s+countOverdue\s*\(\s*long\s+now\s*\)',
+              s
+          ):
+              raise SystemExit(
+                  "ERROR: TaskDao countOverdue(long now) not found."
+              )
+
+
+          p.write_text(s, encoding="utf-8")
+
+          print(
+              "TASK DAO countOverdue(long now): PASS"
+          )
+
+
+          # ========================================================
+          # E. OLD VERSION CHECK NORMALIZATION
+          # ========================================================
 
           scripts = [
               Path("qa_check.py"),
@@ -430,6 +536,7 @@ jobs:
               Path("tools/release_manifest.py"),
           ]
 
+
           for p in scripts:
 
               if not p.exists():
@@ -437,91 +544,67 @@ jobs:
 
               s = p.read_text(encoding="utf-8")
 
-              # Common old versions
-              s = s.replace(
-                  "versionCode 14",
-                  "versionCode 22"
-              )
 
-              s = s.replace(
-                  "versionCode 15",
-                  "versionCode 22"
-              )
+              old_versions = [
+                  ("versionCode 14", "versionCode 22"),
+                  ("versionCode 15", "versionCode 22"),
+                  ("versionCode 16", "versionCode 22"),
+                  ("versionCode 20", "versionCode 22"),
+                  ('versionName "1.0.3"',
+                   'versionName "1.1.1"'),
+                  ('versionName "1.0.4"',
+                   'versionName "1.1.1"'),
+                  ('versionName "1.0.5"',
+                   'versionName "1.1.1"'),
+                  ('versionName "1.0.9"',
+                   'versionName "1.1.1"'),
+                  ("v1.0.3 (14)",
+                   "v1.1.1 (22)"),
+                  ("v1.0.4 (15)",
+                   "v1.1.1 (22)"),
+                  ("v1.0.9 (20)",
+                   "v1.1.1 (22)"),
+              ]
 
-              s = s.replace(
-                  "versionCode 16",
-                  "versionCode 22"
-              )
 
-              s = s.replace(
-                  "versionCode 20",
-                  "versionCode 22"
-              )
+              for old, new in old_versions:
+                  s = s.replace(old, new)
 
-              s = s.replace(
-                  "versionName \"1.0.3\"",
-                  "versionName \"1.1.1\""
-              )
-
-              s = s.replace(
-                  "versionName \"1.0.4\"",
-                  "versionName \"1.1.1\""
-              )
-
-              s = s.replace(
-                  "versionName \"1.0.5\"",
-                  "versionName \"1.1.1\""
-              )
-
-              s = s.replace(
-                  "versionName \"1.0.9\"",
-                  "versionName \"1.1.1\""
-              )
-
-              s = s.replace(
-                  "v1.0.3 (14)",
-                  "v1.1.1 (22)"
-              )
-
-              s = s.replace(
-                  "v1.0.9 (20)",
-                  "v1.1.1 (22)"
-              )
-
-              s = s.replace(
-                  "v1.0.4 (15)",
-                  "v1.1.1 (22)"
-              )
 
               p.write_text(s, encoding="utf-8")
 
 
+          print("OLD QA VERSION CHECKS: PASS")
+
+
           print()
-          print("PROJECT NORMALIZATION: PASS")
-          print("JAVA 17: PASS")
-          print("GRADLE CONFIGURATION: PASS")
-          print("ROOM PRIMARY KEYS: PASS")
-          print("RELEASE VERSION: 1.1.1 / 22")
-          PY
+          print("================================================")
+          print(" COMPLETE SOURCE REPAIR: PASS")
+          print(" VERSION       : 1.1.1")
+          print(" VERSION CODE  : 22")
+          print(" JAVA          : 17")
+          print(" ROOM PK       : FIXED")
+          print(" TASK DAO      : FIXED")
+          print("================================================")
 
 
       # ============================================================
       # 12. FINAL SOURCE VERIFICATION
       # ============================================================
 
-      - name: Verify repaired source code
+      - name: Verify final source code
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_DIR"
 
-          echo "===== VERSION ====="
+          echo "===== RELEASE ====="
 
           grep -q 'versionCode 22' app/build.gradle
           grep -q 'versionName "1.1.1"' app/build.gradle
 
-          echo "Version PASS"
+          echo "Release: PASS"
 
 
           echo
@@ -530,7 +613,7 @@ jobs:
           grep -q 'compileSdk 35' app/build.gradle
           grep -q 'targetSdk 35' app/build.gradle
 
-          echo "SDK PASS"
+          echo "SDK: PASS"
 
 
           echo
@@ -544,7 +627,7 @@ jobs:
             'targetCompatibility JavaVersion.VERSION_17' \
             app/build.gradle
 
-          echo "Java 17 PASS"
+          echo "Java 17: PASS"
 
 
           echo
@@ -562,7 +645,17 @@ jobs:
             '@PrimaryKey @NonNull public String id;' \
             app/src/main/java/com/taskmaster/promax/RecurringTaskEntity.java
 
-          echo "Room primary key PASS"
+          echo "Room primary keys: PASS"
+
+
+          echo
+          echo "===== TASK DAO ====="
+
+          grep -q \
+            'int countOverdue(long now)' \
+            app/src/main/java/com/taskmaster/promax/TaskDao.java
+
+          echo "TaskDao bind parameter: PASS"
 
 
           echo
@@ -570,17 +663,18 @@ jobs:
 
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/java/com/taskmaster/promax/MainActivity.java
+          test -f app/src/main/java/com/taskmaster/promax/TaskDao.java
           test -f settings.gradle
           test -f build.gradle
           test -f gradle.properties
 
-          echo "Core files PASS"
+          echo "Core files: PASS"
 
 
           echo
-          echo "=============================================="
+          echo "================================================"
           echo " FINAL SOURCE VERIFICATION: PASS"
-          echo "=============================================="
+          echo "================================================"
 
 
       # ============================================================
@@ -643,9 +737,10 @@ jobs:
 
 
       # ============================================================
-      # 17. JAVA COMPILATION TEST
+      # 17. JAVA + ROOM COMPILATION TEST
       #
-      # This step isolates Java/Room errors BEFORE APK assembly.
+      # IMPORTANT:
+      # This isolates Java/Room errors before APK assembly.
       # ============================================================
 
       - name: Compile Java and Room sources
@@ -656,9 +751,9 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo
-          echo "=============================================="
-          echo " JAVA + ROOM COMPILATION TEST"
-          echo "=============================================="
+          echo "================================================"
+          echo " JAVA + ROOM COMPILATION"
+          echo "================================================"
 
           gradle \
             --no-daemon \
@@ -681,9 +776,9 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo
-          echo "=============================================="
+          echo "================================================"
           echo " TASKMASTER PRO MAX APK BUILD"
-          echo "=============================================="
+          echo "================================================"
           echo
           echo "Version      : 1.1.1"
           echo "Version Code : 22"
@@ -696,9 +791,7 @@ jobs:
             :app:assembleDebug
 
           echo
-          echo "=============================================="
-          echo " APK BUILD COMMAND COMPLETED"
-          echo "=============================================="
+          echo "APK BUILD COMMAND COMPLETED"
 
 
       # ============================================================
@@ -729,18 +822,18 @@ jobs:
           fi
 
           echo
-          echo "=============================================="
+          echo "================================================"
           echo " APK CREATED SUCCESSFULLY"
-          echo "=============================================="
+          echo "================================================"
 
           ls -lh "$APK"
 
 
       # ============================================================
-      # 20. PREPARE RELEASE
+      # 20. PREPARE APK
       # ============================================================
 
-      - name: Prepare APK release artifact
+      - name: Prepare APK artifact
         shell: bash
         run: |
           set -e
@@ -752,8 +845,8 @@ jobs:
             "release/TaskMasterProMax-v1.1.1-debug.apk"
 
           echo
-          echo "SHA-256:"
-          
+          echo "APK SHA-256:"
+
           sha256sum \
             "release/TaskMasterProMax-v1.1.1-debug.apk" \
             | tee "release/SHA256SUM.txt"
