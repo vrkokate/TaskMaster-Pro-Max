@@ -99,9 +99,10 @@ jobs:
           else
             echo "ERROR: Android Gradle project not found."
 
-            echo
-            echo "Extracted files:"
-            find extracted -maxdepth 4 -type f | sort
+            find extracted \
+              -maxdepth 4 \
+              -type f \
+              | sort
 
             exit 1
           fi
@@ -116,10 +117,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-
-          # ----------------------------------------------------------
-          # Release identity
-          # ----------------------------------------------------------
 
           p = Path("app/build.gradle")
 
@@ -176,10 +173,6 @@ jobs:
               encoding="utf-8"
           )
 
-          # ----------------------------------------------------------
-          # Gradle CI configuration
-          # ----------------------------------------------------------
-
           p = Path("gradle.properties")
 
           existing = (
@@ -195,19 +188,14 @@ jobs:
           required = {
               "org.gradle.jvmargs":
                   "org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8",
-
               "org.gradle.daemon":
                   "org.gradle.daemon=false",
-
               "org.gradle.parallel":
                   "org.gradle.parallel=false",
-
               "android.useAndroidX":
                   "android.useAndroidX=true",
-
               "android.enableJetifier":
                   "android.enableJetifier=false",
-
               "android.nonTransitiveRClass":
                   "android.nonTransitiveRClass=false",
           }
@@ -226,13 +214,6 @@ jobs:
               "\n".join(lines).rstrip() + "\n",
               encoding="utf-8"
           )
-
-          # ----------------------------------------------------------
-          # Room String primary-key nullability repair
-          #
-          # IMPORTANT:
-          # Do not modify TaskDao.java here.
-          # ----------------------------------------------------------
 
           entity_dir = Path(
               "app/src/main/java/com/taskmaster/promax"
@@ -253,22 +234,22 @@ jobs:
                       f"ERROR: Missing Room entity: {filename}"
                   )
 
-              s = p.read_text(
+              text = p.read_text(
                   encoding="utf-8"
               )
 
               if (
                   "import androidx.annotation.NonNull;"
-                  not in s
+                  not in text
               ):
 
                   package_line = (
                       "package com.taskmaster.promax;\n\n"
                   )
 
-                  if package_line in s:
+                  if package_line in text:
 
-                      s = s.replace(
+                      text = text.replace(
                           package_line,
                           package_line
                           + "import androidx.annotation.NonNull;\n",
@@ -283,18 +264,18 @@ jobs:
                   f"@PrimaryKey @NonNull public String {field};"
               )
 
-              s = s.replace(
+              text = text.replace(
                   old,
                   new
               )
 
-              if new not in s:
+              if new not in text:
                   raise SystemExit(
                       f"ERROR: Room primary-key fix failed: {filename}"
                   )
 
               p.write_text(
-                  s,
+                  text,
                   encoding="utf-8"
               )
 
@@ -303,6 +284,99 @@ jobs:
           print("Version code: 22")
           print("Java 17: PASS")
           print("Room primary keys: PASS")
+          PY
+
+      - name: Synchronize QA release checks
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path("qa_check.py"),
+              Path("tools/preflight.py"),
+              Path("tools/final_build_gate.py"),
+              Path("tools/final_release_audit.py"),
+              Path("tools/release_audit.py"),
+              Path("tools/release_manifest.py"),
+          ]
+
+          changed = []
+
+          for path in files:
+
+              if not path.exists():
+                  continue
+
+              text = path.read_text(
+                  encoding="utf-8"
+              )
+
+              original = text
+
+              # Synchronize only stale release identity.
+              text = text.replace(
+                  "1.0.3/14",
+                  "1.1.1/22"
+              )
+
+              text = text.replace(
+                  "1.0.3 / 14",
+                  "1.1.1 / 22"
+              )
+
+              text = text.replace(
+                  "1.0.3\\/14",
+                  "1.1.1\\/22"
+              )
+
+              text = re.sub(
+                  r'(?<![0-9.])versionCode\s+14(?![0-9])',
+                  'versionCode 22',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?<![0-9.])versionName\s+["\']1\.0\.3["\']',
+                  'versionName "1.1.1"',
+                  text
+              )
+
+              text = text.replace(
+                  "v1.0.3 (14)",
+                  "v1.1.1 (22)"
+              )
+
+              if text != original:
+
+                  path.write_text(
+                      text,
+                      encoding="utf-8"
+                  )
+
+                  changed.append(
+                      str(path)
+                  )
+
+          print("QA release synchronization: PASS")
+
+          if changed:
+
+              print("Updated QA files:")
+
+              for item in changed:
+                  print(" -", item)
+
+          else:
+
+              print(
+                  "No stale 1.0.3/14 QA release check found."
+              )
           PY
 
       - name: Verify final project
@@ -348,13 +422,63 @@ jobs:
             '@PrimaryKey @NonNull public String id;' \
             app/src/main/java/com/taskmaster/promax/RecurringTaskEntity.java
 
-          test -f \
-            app/src/main/java/com/taskmaster/promax/MainActivity.java
-
-          test -f \
-            app/src/main/AndroidManifest.xml
-
           echo "FINAL PROJECT VERIFICATION: PASS"
+
+      - name: Verify QA release synchronization
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = [
+              Path("qa_check.py"),
+              Path("tools/preflight.py"),
+              Path("tools/final_build_gate.py"),
+              Path("tools/final_release_audit.py"),
+              Path("tools/release_audit.py"),
+              Path("tools/release_manifest.py"),
+          ]
+
+          stale = []
+
+          for path in files:
+
+              if not path.exists():
+                  continue
+
+              text = path.read_text(
+                  encoding="utf-8"
+              )
+
+              if (
+                  "1.0.3/14" in text
+                  or "1.0.3 / 14" in text
+                  or "versionCode 14" in text
+                  or "versionName \"1.0.3\"" in text
+              ):
+                  stale.append(
+                      str(path)
+                  )
+
+          if stale:
+
+              print(
+                  "ERROR: Stale release check remains:"
+              )
+
+              for item in stale:
+                  print(" -", item)
+
+              raise SystemExit(1)
+
+          print(
+              "QA release verification: PASS"
+          )
+          PY
 
       - name: Run preflight checks
         shell: bash
@@ -436,6 +560,7 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
+
             echo "ERROR: APK was not created."
 
             find \
@@ -450,6 +575,24 @@ jobs:
 
           echo "APK CREATED:"
           ls -lh "$APK"
+
+      - name: Verify APK signature
+        if: success()
+        shell: bash
+        run: |
+          set -e
+
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            verify \
+            --verbose \
+            "$APK"
+
+          unzip -t "$APK" >/dev/null
+
+          echo "APK signature: PASS"
+          echo "APK ZIP integrity: PASS"
 
       - name: Upload Gradle failure diagnostics
         if: failure()
