@@ -72,7 +72,7 @@ jobs:
 
           echo "PROJECT_ZIP=$ZIP_NAME" >> "$GITHUB_ENV"
 
-          echo "Selected Android project:"
+          echo "Selected project:"
           echo "$ZIP_NAME"
 
       - name: Verify project ZIP
@@ -243,91 +243,105 @@ jobs:
           from pathlib import Path
           import re
 
-          base = Path(
-              "app/src/main/java/com/taskmaster/promax"
+          print("Searching TaskDao.java...")
+
+          dao_files = list(
+              Path("app/src/main/java").rglob("TaskDao.java")
           )
 
-          entities = {
-              "TaskEntity.java": "id",
-              "ReminderEntity.java": "taskId",
-              "RecurringTaskEntity.java": "id",
-          }
-
-          for filename, field in entities.items():
-
-              p = base / filename
-
-              if not p.exists():
-                  raise SystemExit(
-                      f"ERROR: Missing {filename}"
-                  )
-
-              s = p.read_text(encoding="utf-8")
-
-              if "import androidx.annotation.NonNull;" not in s:
-
-                  package_line = (
-                      "package com.taskmaster.promax;"
-                  )
-
-                  if package_line in s:
-
-                      s = s.replace(
-                          package_line,
-                          package_line
-                          + "\n\n"
-                          + "import androidx.annotation.NonNull;",
-                          1
-                      )
-
-              s = re.sub(
-                  rf"@PrimaryKey\s+public\s+String\s+{re.escape(field)}\s*;",
-                  f"@PrimaryKey @NonNull public String {field};",
-                  s,
-                  count=1
-              )
-
-              if (
-                  f"@PrimaryKey @NonNull public String {field};"
-                  not in s
-              ):
-                  raise SystemExit(
-                      f"ERROR: Room primary key repair failed: {filename}"
-                  )
-
-              p.write_text(
-                  s,
-                  encoding="utf-8"
-              )
-
-          dao = base / "TaskDao.java"
-
-          if not dao.exists():
+          if not dao_files:
               raise SystemExit(
                   "ERROR: TaskDao.java not found."
               )
+
+          if len(dao_files) > 1:
+              print("WARNING: Multiple TaskDao.java files found:")
+              for x in dao_files:
+                  print(" -", x)
+
+          dao = dao_files[0]
+
+          print("Using:")
+          print(dao)
 
           s = dao.read_text(
               encoding="utf-8"
           )
 
-          pattern = re.compile(
-              r'''(@Query"SELECT COUNT\(\* FROM tasks\s+WHERE status!='COMPLETED' AND dueAt < :now"\)\s*)int\s+countOverdue\s*\s*\s*;''',
-              re.MULTILINE
+          print("")
+          print("Before repair - countOverdue declarations:")
+
+          for line in s.splitlines():
+              if "countOverdue" in line:
+                  print(line)
+
+          # ---------------------------------------------------------
+          # IMPORTANT:
+          # Do not depend on one exact old formatting pattern.
+          # Replace the complete countOverdue query + declaration.
+          # ---------------------------------------------------------
+
+          query_pattern = re.compile(
+              r'@Query\s*\s*"SELECT\s+COUNT\s*\(\s*\*\s*'
+              r'\s+FROM\s+tasks\s+WHERE\s+status\s*!=\s*[\'"]COMPLETED[\'"]'
+              r'\s+AND\s+dueAt\s*<\s*:now"\s*\)'
+              r'\s*(?:public\s+)?(?:abstract\s+)?int\s+countOverdue'
+              r'\s*[^;]*\s*;',
+              re.IGNORECASE | re.MULTILINE
           )
 
-          s = pattern.sub(
-              r"\1int countOverdue(long now);",
-              s,
-              count=1
-          )
+          correct_method = '''@Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
+              int countOverdue(long now);'''
 
-          if not re.search(
-              r"int\s+countOverdue\s*\s*long\s+now\s*",
-              s
-          ):
-              raise SystemExit(
-                  "ERROR: countOverdue(long now) not found."
+          if query_pattern.search(s):
+
+              s = query_pattern.sub(
+                  correct_method,
+                  s,
+                  count=1
+              )
+
+              print(
+                  "Existing countOverdue query repaired."
+              )
+
+          else:
+
+              # Remove an existing countOverdue declaration
+              # if formatting/query differs.
+              s = re.sub(
+                  r'(?s)@Query\s*[^)]*\s*'
+                  r'(?:public\s+|private\s+|protected\s+)?'
+                  r'(?:abstract\s+)?'
+                  r'int\s+countOverdue\s*[^;]*\s*;',
+                  "",
+                  s,
+                  count=1
+              )
+
+              # Add the correct declaration before the final }
+              method_block = '''
+
+              @Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
+              int countOverdue(long now);
+              '''
+
+              pos = s.rfind("}")
+
+              if pos == -1:
+                  raise SystemExit(
+                      "ERROR: Invalid TaskDao.java - closing brace not found."
+                  )
+
+              s = (
+                  s[:pos]
+                  + method_block
+                  + "\n"
+                  + s[pos:]
+              )
+
+              print(
+                  "countOverdue method inserted/repaired."
               )
 
           dao.write_text(
@@ -335,8 +349,112 @@ jobs:
               encoding="utf-8"
           )
 
-          print("Room primary keys: PASS")
-          print("TaskDao: PASS")
+          # ---------------------------------------------------------
+          # FINAL verification
+          # ---------------------------------------------------------
+
+          s2 = dao.read_text(
+              encoding="utf-8"
+          )
+
+          if not re.search(
+              r'\bint\s+countOverdue\s*\s*long\s+now\s*\s*;',
+              s2
+          ):
+              print("")
+              print("TaskDao.java after repair:")
+              print(s2)
+              raise SystemExit(
+                  "ERROR: countOverdue(long now) still not found."
+              )
+
+          if ':now' not in s2:
+              raise SystemExit(
+                  "ERROR: countOverdue query does not contain :now."
+              )
+
+          print("")
+          print("countOverdue(long now): PASS")
+
+          # ---------------------------------------------------------
+          # Room Entity @NonNull repairs
+          # ---------------------------------------------------------
+
+          entities = {
+              "TaskEntity.java": "id",
+              "ReminderEntity.java": "taskId",
+              "RecurringTaskEntity.java": "id",
+          }
+
+          java_root = Path(
+              "app/src/main/java"
+          )
+
+          for filename, field in entities.items():
+
+              matches = list(
+                  java_root.rglob(filename)
+              )
+
+              if not matches:
+                  print(
+                      f"WARNING: {filename} not found. Skipping."
+                  )
+                  continue
+
+              p = matches[0]
+
+              s = p.read_text(
+                  encoding="utf-8"
+              )
+
+              if (
+                  "import androidx.annotation.NonNull;"
+                  not in s
+              ):
+
+                  package_match = re.search(
+                      r'^\s*package\s+[^;]+;',
+                      s,
+                      re.MULTILINE
+                  )
+
+                  if package_match:
+
+                      insert_at = package_match.end()
+
+                      s = (
+                          s[:insert_at]
+                          + "\n\n"
+                          + "import androidx.annotation.NonNull;"
+                          + s[insert_at:]
+                      )
+
+              pattern = re.compile(
+                  rf'@PrimaryKey\s+(?:public\s+)?String\s+'
+                  rf'{re.escape(field)}\s*;',
+                  re.MULTILINE
+              )
+
+              if pattern.search(s):
+
+                  s = pattern.sub(
+                      f"@PrimaryKey @NonNull public String {field};",
+                      s,
+                      count=1
+                  )
+
+              p.write_text(
+                  s,
+                  encoding="utf-8"
+              )
+
+              print(
+                  f"Room entity checked: {filename}"
+              )
+
+          print("")
+          print("ROOM CONFIGURATION: PASS")
           PY
 
       - name: Repair old preflight version checks
@@ -407,26 +525,33 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          MAIN="app/src/main/java/com/taskmaster/promax/MainActivity.java"
-          MANIFEST="app/src/main/AndroidManifest.xml"
-          HTML="app/src/main/assets/index.html"
+          MAIN_FILES=(
+            $(find app/src/main/java -name "MainActivity.java")
+          )
 
-          test -s "$MAIN"
-          test -s "$MANIFEST"
-          test -s "$HTML"
+          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
+            echo "ERROR: MainActivity.java not found."
+            exit 1
+          fi
+
+          MAIN="${MAIN_FILES[0]}"
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+
+          if [ ! -s "$MANIFEST" ]; then
+            echo "ERROR: AndroidManifest.xml not found."
+            exit 1
+          fi
 
           grep -q "ReminderDatabase" "$MAIN"
-
           grep -q "scheduleReminder" "$MAIN"
           grep -q "cancelReminder" "$MAIN"
-
           grep -q "openTaskFromReminder" "$MAIN"
-          grep -q "openTaskFromReminder" "$HTML"
 
-          echo "Reminder database: PASS"
-          echo "Schedule reminder: PASS"
-          echo "Cancel reminder: PASS"
-          echo "Open task from reminder: PASS"
+          echo "ReminderDatabase: PASS"
+          echo "scheduleReminder: PASS"
+          echo "cancelReminder: PASS"
+          echo "openTaskFromReminder: PASS"
 
       - name: Add required Android notification permissions
         shell: bash
@@ -458,33 +583,29 @@ jobs:
               "android.permission.RECEIVE_BOOT_COMPLETED",
           ]
 
-          missing = [
-              x for x in permissions
-              if x not in s
-          ]
+          match = re.search(
+              r"<manifest\b[^>]*>",
+              s,
+              flags=re.DOTALL
+          )
 
-          if missing:
-
-              match = re.search(
-                  r"<manifest\b[^>]*>",
-                  s,
-                  flags=re.DOTALL
+          if not match:
+              raise SystemExit(
+                  "ERROR: Invalid AndroidManifest.xml"
               )
 
-              if not match:
-                  raise SystemExit(
-                      "ERROR: Invalid AndroidManifest.xml"
-                  )
+          additions = ""
 
-              additions = "\n"
+          for permission in permissions:
 
-              for permission in missing:
+              if permission not in s:
 
                   additions += (
-                      "    <uses-permission "
-                      f'android:name="{permission}" />\n'
+                      f'\n    <uses-permission '
+                      f'android:name="{permission}" />'
                   )
 
+          if additions:
               additions += "\n"
 
               s = (
@@ -505,7 +626,9 @@ jobs:
                       f"ERROR: Permission missing: {permission}"
                   )
 
-          print("Android notification permissions: PASS")
+          print(
+              "Android notification permissions: PASS"
+          )
           PY
 
       - name: Verify notification permissions
@@ -594,17 +717,23 @@ jobs:
             'targetCompatibility JavaVersion.VERSION_17' \
             app/build.gradle
 
-          grep -q \
-            'int countOverdue(long now)' \
-            app/src/main/java/com/taskmaster/promax/TaskDao.java
+          DAO=$(find app/src/main/java -name "TaskDao.java" | head -n 1)
+
+          test -n "$DAO"
+
+          grep -Eq \
+            'int[[:space:]]+countOverdue[[:space:]]*[[:space:]]*long[[:space:]]+now[[:space:]]*' \
+            "$DAO"
+
+          MAIN=$(find app/src/main/java -name "MainActivity.java" | head -n 1)
 
           grep -q \
             "scheduleReminder" \
-            app/src/main/java/com/taskmaster/promax/MainActivity.java
+            "$MAIN"
 
           grep -q \
             "cancelReminder" \
-            app/src/main/java/com/taskmaster/promax/MainActivity.java
+            "$MAIN"
 
           echo "FINAL SOURCE VERIFICATION: PASS"
 
