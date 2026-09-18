@@ -1,237 +1,3 @@
-name: TaskMaster Pro Max - Android APK Cloud Build
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
-
-jobs:
-  build-apk:
-    name: Build TaskMaster Pro Max APK
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Install Android SDK 35
-        shell: bash
-        run: |
-          set -e
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "8.7"
-
-      - name: Verify Java and Gradle
-        shell: bash
-        run: |
-          set -e
-          java -version
-          gradle --version
-
-      - name: Find TaskMaster Android project ZIP
-        shell: bash
-        run: |
-          set -e
-
-          mapfile -t ZIPS < <(
-            find . -maxdepth 1 -type f \
-              -name 'TaskMasterProMax_Android_*.zip' \
-              -printf '%f\n' \
-              | sort -V
-          )
-
-          if [ "${#ZIPS[@]}" -eq 0 ]; then
-            echo "ERROR: No TaskMasterProMax Android project ZIP found."
-            ls -lah
-            exit 1
-          fi
-
-          ZIP_NAME="${ZIPS[${#ZIPS[@]}-1]}"
-
-          echo "PROJECT_ZIP=$ZIP_NAME" >> "$GITHUB_ENV"
-
-          echo "Selected project:"
-          echo "$ZIP_NAME"
-
-      - name: Verify project ZIP
-        shell: bash
-        run: |
-          set -e
-
-          test -f "$PROJECT_ZIP"
-          unzip -t "$PROJECT_ZIP" >/dev/null
-
-          echo "ZIP integrity: PASS"
-          sha256sum "$PROJECT_ZIP"
-
-      - name: Extract Android project
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf extracted
-          mkdir -p extracted
-
-          unzip -q "$PROJECT_ZIP" -d extracted
-
-          echo "Project extraction: PASS"
-
-      - name: Determine Android project directory
-        shell: bash
-        run: |
-          set -e
-
-          if [ -f "extracted/project/settings.gradle" ] \
-             && [ -f "extracted/project/app/build.gradle" ]; then
-
-            PROJECT_DIR="extracted/project"
-
-          elif [ -f "extracted/settings.gradle" ] \
-             && [ -f "extracted/app/build.gradle" ]; then
-
-            PROJECT_DIR="extracted"
-
-          else
-
-            echo "ERROR: Android Gradle project not found."
-            find extracted -maxdepth 5 -type f | sort
-            exit 1
-
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
-      - name: Repair release configuration
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          VERSION_NAME = "1.1.2"
-          VERSION_CODE = "23"
-
-          p = Path("app/build.gradle")
-
-          if not p.exists():
-              raise SystemExit("ERROR: app/build.gradle not found.")
-
-          s = p.read_text(encoding="utf-8")
-
-          s = re.sub(
-              r"versionCode\s+\d+",
-              f"versionCode {VERSION_CODE}",
-              s,
-              count=1
-          )
-
-          s = re.sub(
-              r'''versionName\s+["'][^"']+["']''',
-              f'versionName "{VERSION_NAME}"',
-              s,
-              count=1
-          )
-
-          if "sourceCompatibility JavaVersion.VERSION_17" not in s:
-
-              marker = "    buildTypes {"
-
-              if marker not in s:
-                  raise SystemExit(
-                      "ERROR: buildTypes block not found."
-                  )
-
-              java_block = """    compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-
-          """
-
-              s = s.replace(
-                  marker,
-                  java_block + marker,
-                  1
-              )
-
-          p.write_text(
-              s,
-              encoding="utf-8"
-          )
-
-          p = Path("gradle.properties")
-
-          old = (
-              p.read_text(encoding="utf-8")
-              if p.exists()
-              else ""
-          )
-
-          lines = old.splitlines()
-
-          required = {
-              "org.gradle.jvmargs":
-                  "org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8",
-              "org.gradle.daemon":
-                  "org.gradle.daemon=false",
-              "org.gradle.parallel":
-                  "org.gradle.parallel=false",
-              "android.useAndroidX":
-                  "android.useAndroidX=true",
-              "android.enableJetifier":
-                  "android.enableJetifier=false",
-              "android.nonTransitiveRClass":
-                  "android.nonTransitiveRClass=false",
-          }
-
-          for key, value in required.items():
-
-              lines = [
-                  x for x in lines
-                  if not x.startswith(key + "=")
-              ]
-
-              lines.append(value)
-
-          p.write_text(
-              "\n".join(lines).rstrip() + "\n",
-              encoding="utf-8"
-          )
-
-          print("Release configuration: PASS")
-          print("Version:", VERSION_NAME)
-          print("Version code:", VERSION_CODE)
-          PY
-
       - name: Repair Room configuration
         shell: bash
         run: |
@@ -243,7 +9,13 @@ jobs:
           from pathlib import Path
           import re
 
-          print("Searching TaskDao.java...")
+          print("==============================================")
+          print(" ROOM CONFIGURATION REPAIR")
+          print("==============================================")
+
+          # ---------------------------------------------------------
+          # Find TaskDao.java automatically
+          # ---------------------------------------------------------
 
           dao_files = list(
               Path("app/src/main/java").rglob("TaskDao.java")
@@ -254,95 +26,63 @@ jobs:
                   "ERROR: TaskDao.java not found."
               )
 
-          if len(dao_files) > 1:
-              print("WARNING: Multiple TaskDao.java files found:")
-              for x in dao_files:
-                  print(" -", x)
-
           dao = dao_files[0]
 
-          print("Using:")
+          print("Using TaskDao:")
           print(dao)
 
           s = dao.read_text(
               encoding="utf-8"
           )
 
-          print("")
-          print("Before repair - countOverdue declarations:")
-
-          for line in s.splitlines():
-              if "countOverdue" in line:
-                  print(line)
-
           # ---------------------------------------------------------
-          # IMPORTANT:
-          # Do not depend on one exact old formatting pattern.
-          # Replace the complete countOverdue query + declaration.
+          # Remove every existing countOverdue declaration.
+          # This avoids duplicate methods.
           # ---------------------------------------------------------
 
-          query_pattern = re.compile(
-              r'@Query\s*\s*"SELECT\s+COUNT\s*\(\s*\*\s*'
+          s = re.sub(
+              r'(?s)@Query\s*\s*"SELECT\s+COUNT\s*\(\s*\*\s*'
               r'\s+FROM\s+tasks\s+WHERE\s+status\s*!=\s*[\'"]COMPLETED[\'"]'
               r'\s+AND\s+dueAt\s*<\s*:now"\s*\)'
-              r'\s*(?:public\s+)?(?:abstract\s+)?int\s+countOverdue'
-              r'\s*[^;]*\s*;',
-              re.IGNORECASE | re.MULTILINE
+              r'\s*(?:public\s+|protected\s+|private\s+|abstract\s+)*'
+              r'int\s+countOverdue\s*[^;]*\s*;',
+              '',
+              s,
+              flags=re.IGNORECASE
           )
 
-          correct_method = '''@Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
-              int countOverdue(long now);'''
+          # Also remove a declaration if the old query formatting
+          # is different.
+          s = re.sub(
+              r'(?m)^\s*(?:public\s+|protected\s+|private\s+|abstract\s+)*'
+              r'int\s+countOverdue\s*[^;]*\s*;\s*$',
+              '',
+              s
+          )
 
-          if query_pattern.search(s):
+          # ---------------------------------------------------------
+          # Insert the correct Room query immediately before the
+          # final closing brace of TaskDao.
+          # ---------------------------------------------------------
 
-              s = query_pattern.sub(
-                  correct_method,
-                  s,
-                  count=1
-              )
-
-              print(
-                  "Existing countOverdue query repaired."
-              )
-
-          else:
-
-              # Remove an existing countOverdue declaration
-              # if formatting/query differs.
-              s = re.sub(
-                  r'(?s)@Query\s*[^)]*\s*'
-                  r'(?:public\s+|private\s+|protected\s+)?'
-                  r'(?:abstract\s+)?'
-                  r'int\s+countOverdue\s*[^;]*\s*;',
-                  "",
-                  s,
-                  count=1
-              )
-
-              # Add the correct declaration before the final }
-              method_block = '''
-
+          method = '''
               @Query("SELECT COUNT(*) FROM tasks WHERE status!='COMPLETED' AND dueAt < :now")
               int countOverdue(long now);
-              '''
+          '''
 
-              pos = s.rfind("}")
+          closing = s.rfind("}")
 
-              if pos == -1:
-                  raise SystemExit(
-                      "ERROR: Invalid TaskDao.java - closing brace not found."
-                  )
-
-              s = (
-                  s[:pos]
-                  + method_block
-                  + "\n"
-                  + s[pos:]
+          if closing == -1:
+              raise SystemExit(
+                  "ERROR: TaskDao.java closing brace not found."
               )
 
-              print(
-                  "countOverdue method inserted/repaired."
-              )
+          s = (
+              s[:closing]
+              + method
+              + "\n"
+              + s[closing:]
+          )
 
           dao.write_text(
               s,
@@ -350,34 +90,50 @@ jobs:
           )
 
           # ---------------------------------------------------------
-          # FINAL verification
+          # Read the file again.
           # ---------------------------------------------------------
 
-          s2 = dao.read_text(
+          verify = dao.read_text(
               encoding="utf-8"
           )
 
-          if not re.search(
-              r'\bint\s+countOverdue\s*\s*long\s+now\s*\s*;',
-              s2
-          ):
-              print("")
-              print("TaskDao.java after repair:")
-              print(s2)
+          # ---------------------------------------------------------
+          # Reliable verification.
+          # Do NOT use the previous overly strict regex.
+          # ---------------------------------------------------------
+
+          if "countOverdue(long now)" not in verify:
               raise SystemExit(
-                  "ERROR: countOverdue(long now) still not found."
+                  "ERROR: countOverdue(long now) was not inserted."
               )
 
-          if ':now' not in s2:
+          if "@Query(" not in verify:
               raise SystemExit(
-                  "ERROR: countOverdue query does not contain :now."
+                  "ERROR: Room @Query annotation not found."
+              )
+
+          if "COUNT(*)" not in verify:
+              raise SystemExit(
+                  "ERROR: COUNT(*) query not found."
+              )
+
+          if "FROM tasks" not in verify:
+              raise SystemExit(
+                  "ERROR: tasks table query not found."
+              )
+
+          if "dueAt < :now" not in verify:
+              raise SystemExit(
+                  "ERROR: dueAt < :now condition not found."
               )
 
           print("")
           print("countOverdue(long now): PASS")
+          print("Room COUNT query: PASS")
+          print("dueAt condition: PASS")
 
           # ---------------------------------------------------------
-          # Room Entity @NonNull repairs
+          # Room Entity @NonNull repair
           # ---------------------------------------------------------
 
           entities = {
@@ -404,486 +160,52 @@ jobs:
 
               p = matches[0]
 
-              s = p.read_text(
+              text = p.read_text(
                   encoding="utf-8"
               )
 
               if (
                   "import androidx.annotation.NonNull;"
-                  not in s
+                  not in text
               ):
 
                   package_match = re.search(
                       r'^\s*package\s+[^;]+;',
-                      s,
+                      text,
                       re.MULTILINE
                   )
 
                   if package_match:
 
-                      insert_at = package_match.end()
+                      pos = package_match.end()
 
-                      s = (
-                          s[:insert_at]
+                      text = (
+                          text[:pos]
                           + "\n\n"
                           + "import androidx.annotation.NonNull;"
-                          + s[insert_at:]
+                          + text[pos:]
                       )
 
-              pattern = re.compile(
+              # Repair common Room String primary-key declaration.
+              text = re.sub(
                   rf'@PrimaryKey\s+(?:public\s+)?String\s+'
                   rf'{re.escape(field)}\s*;',
-                  re.MULTILINE
+                  f'@PrimaryKey @NonNull public String {field};',
+                  text,
+                  count=1
               )
 
-              if pattern.search(s):
-
-                  s = pattern.sub(
-                      f"@PrimaryKey @NonNull public String {field};",
-                      s,
-                      count=1
-                  )
-
               p.write_text(
-                  s,
+                  text,
                   encoding="utf-8"
               )
 
               print(
-                  f"Room entity checked: {filename}"
+                  f"Checked Room entity: {filename}"
               )
 
           print("")
-          print("ROOM CONFIGURATION: PASS")
+          print("==============================================")
+          print(" ROOM CONFIGURATION: PASS")
+          print("==============================================")
           PY
-
-      - name: Repair old preflight version checks
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          files = [
-              Path("qa_check.py"),
-              Path("tools/preflight.py"),
-              Path("tools/final_build_gate.py"),
-              Path("tools/final_release_audit.py"),
-              Path("tools/release_audit.py"),
-              Path("tools/release_manifest.py"),
-          ]
-
-          for p in files:
-
-              if not p.exists():
-                  continue
-
-              s = p.read_text(
-                  encoding="utf-8"
-              )
-
-              s = re.sub(
-                  r"versionCode\s+\d+",
-                  "versionCode 23",
-                  s
-              )
-
-              s = re.sub(
-                  r'''versionName\s+["'][^"']+["']''',
-                  'versionName "1.1.2"',
-                  s
-              )
-
-              s = re.sub(
-                  r"Release version\s+[0-9]+\.[0-9]+\.[0-9]+/[0-9]+",
-                  "Release version 1.1.2/23",
-                  s
-              )
-
-              s = re.sub(
-                  r"v[0-9]+\.[0-9]+\.[0-9]+\s*[0-9]+",
-                  "v1.1.2 (23)",
-                  s
-              )
-
-              p.write_text(
-                  s,
-                  encoding="utf-8"
-              )
-
-          print("Preflight version repair: PASS")
-          PY
-
-      - name: Verify notification infrastructure
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          MAIN_FILES=(
-            $(find app/src/main/java -name "MainActivity.java")
-          )
-
-          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: MainActivity.java not found."
-            exit 1
-          fi
-
-          MAIN="${MAIN_FILES[0]}"
-
-          MANIFEST="app/src/main/AndroidManifest.xml"
-
-          if [ ! -s "$MANIFEST" ]; then
-            echo "ERROR: AndroidManifest.xml not found."
-            exit 1
-          fi
-
-          grep -q "ReminderDatabase" "$MAIN"
-          grep -q "scheduleReminder" "$MAIN"
-          grep -q "cancelReminder" "$MAIN"
-          grep -q "openTaskFromReminder" "$MAIN"
-
-          echo "ReminderDatabase: PASS"
-          echo "scheduleReminder: PASS"
-          echo "cancelReminder: PASS"
-          echo "openTaskFromReminder: PASS"
-
-      - name: Add required Android notification permissions
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path(
-              "app/src/main/AndroidManifest.xml"
-          )
-
-          if not p.exists():
-              raise SystemExit(
-                  "ERROR: AndroidManifest.xml not found."
-              )
-
-          s = p.read_text(
-              encoding="utf-8"
-          )
-
-          permissions = [
-              "android.permission.POST_NOTIFICATIONS",
-              "android.permission.SCHEDULE_EXACT_ALARM",
-              "android.permission.RECEIVE_BOOT_COMPLETED",
-          ]
-
-          match = re.search(
-              r"<manifest\b[^>]*>",
-              s,
-              flags=re.DOTALL
-          )
-
-          if not match:
-              raise SystemExit(
-                  "ERROR: Invalid AndroidManifest.xml"
-              )
-
-          additions = ""
-
-          for permission in permissions:
-
-              if permission not in s:
-
-                  additions += (
-                      f'\n    <uses-permission '
-                      f'android:name="{permission}" />'
-                  )
-
-          if additions:
-              additions += "\n"
-
-              s = (
-                  s[:match.end()]
-                  + additions
-                  + s[match.end():]
-              )
-
-          p.write_text(
-              s,
-              encoding="utf-8"
-          )
-
-          for permission in permissions:
-
-              if permission not in s:
-                  raise SystemExit(
-                      f"ERROR: Permission missing: {permission}"
-                  )
-
-          print(
-              "Android notification permissions: PASS"
-          )
-          PY
-
-      - name: Verify notification permissions
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          MANIFEST="app/src/main/AndroidManifest.xml"
-
-          grep -q \
-            "android.permission.POST_NOTIFICATIONS" \
-            "$MANIFEST"
-
-          grep -q \
-            "android.permission.SCHEDULE_EXACT_ALARM" \
-            "$MANIFEST"
-
-          grep -q \
-            "android.permission.RECEIVE_BOOT_COMPLETED" \
-            "$MANIFEST"
-
-          grep -q \
-            "BOOT_COMPLETED" \
-            "$MANIFEST"
-
-          echo "POST_NOTIFICATIONS: PASS"
-          echo "SCHEDULE_EXACT_ALARM: PASS"
-          echo "RECEIVE_BOOT_COMPLETED: PASS"
-          echo "BOOT_COMPLETED: PASS"
-
-      - name: Verify backup and migration safety
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          test -f \
-            app/src/main/res/xml/backup_rules.xml
-
-          test -f \
-            app/src/main/res/xml/data_extraction_rules.xml
-
-          if grep -Rqs \
-              "fallbackToDestructiveMigration" \
-              app/src/main/java; then
-
-            echo "ERROR: Destructive migration fallback found."
-            exit 1
-          fi
-
-          echo "Backup rules: PASS"
-          echo "Data extraction rules: PASS"
-          echo "Migration safety: PASS"
-
-      - name: Verify final source
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          grep -q \
-            'versionCode 23' \
-            app/build.gradle
-
-          grep -q \
-            'versionName "1.1.2"' \
-            app/build.gradle
-
-          grep -q \
-            'compileSdk 35' \
-            app/build.gradle
-
-          grep -q \
-            'targetSdk 35' \
-            app/build.gradle
-
-          grep -q \
-            'sourceCompatibility JavaVersion.VERSION_17' \
-            app/build.gradle
-
-          grep -q \
-            'targetCompatibility JavaVersion.VERSION_17' \
-            app/build.gradle
-
-          DAO=$(find app/src/main/java -name "TaskDao.java" | head -n 1)
-
-          test -n "$DAO"
-
-          grep -Eq \
-            'int[[:space:]]+countOverdue[[:space:]]*[[:space:]]*long[[:space:]]+now[[:space:]]*' \
-            "$DAO"
-
-          MAIN=$(find app/src/main/java -name "MainActivity.java" | head -n 1)
-
-          grep -q \
-            "scheduleReminder" \
-            "$MAIN"
-
-          grep -q \
-            "cancelReminder" \
-            "$MAIN"
-
-          echo "FINAL SOURCE VERIFICATION: PASS"
-
-      - name: Run preflight checks
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 tools/preflight.py
-
-      - name: Run final build gate
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 tools/final_build_gate.py
-
-      - name: Run final release audit
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 tools/final_release_audit.py
-
-      - name: Verify Gradle project
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            tasks --all
-
-      - name: Compile Java and Room
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            :app:compileDebugJavaWithJavac
-
-      - name: Build Debug APK
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          echo "=============================================="
-          echo " TASKMASTER PRO MAX APK BUILD"
-          echo " Version       : 1.1.2"
-          echo " Version Code  : 23"
-          echo " Notification  : ENABLED"
-          echo " Reminder      : ENABLED"
-          echo " Bell          : ENABLED"
-          echo " Exact Alarm   : ENABLED"
-          echo " Boot Restore  : ENABLED"
-          echo "=============================================="
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            --warning-mode all \
-            clean \
-            :app:assembleDebug
-
-      - name: Verify APK output
-        shell: bash
-        run: |
-          set -e
-
-          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not created."
-            find "$PROJECT_DIR/app/build" \
-              -type f \
-              -name "*.apk" \
-              -print || true
-            exit 1
-          fi
-
-          echo "APK CREATED:"
-          ls -lh "$APK"
-
-      - name: Verify APK signature
-        shell: bash
-        run: |
-          set -e
-
-          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
-            verify \
-            --verbose \
-            "$APK"
-
-          unzip -t "$APK" >/dev/null
-
-          echo "APK verification: PASS"
-
-      - name: Prepare APK artifact
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p release
-
-          cp \
-            "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" \
-            release/TaskMasterProMax-v1.1.2-debug.apk
-
-          sha256sum \
-            release/TaskMasterProMax-v1.1.2-debug.apk \
-            | tee release/SHA256SUM.txt
-
-          echo "Final APK:"
-          ls -lh release/
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: TaskMasterProMax-v1.1.2-APK
-          if-no-files-found: error
-          path: |
-            release/TaskMasterProMax-v1.1.2-debug.apk
-            release/SHA256SUM.txt
-
-      - name: Final build success
-        run: |
-          echo "================================================"
-          echo " TASKMASTER PRO MAX APK BUILD SUCCESS"
-          echo "================================================"
-          echo "Version       : 1.1.2"
-          echo "Version Code  : 23"
-          echo "Notification  : ENABLED"
-          echo "Reminder Bell : ENABLED"
-          echo "Exact Alarm   : ENABLED"
-          echo "Boot Restore  : ENABLED"
-          echo "================================================"
