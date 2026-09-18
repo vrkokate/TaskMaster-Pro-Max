@@ -60,7 +60,8 @@ jobs:
           mapfile -t ZIPS < <(
             find . -maxdepth 1 -type f \
               -name 'TaskMasterProMax_Android_*.zip' \
-              -printf '%f\n' | sort -V
+              -printf '%f\n' \
+              | sort -V
           )
 
           if [ "${#ZIPS[@]}" -eq 0 ]; then
@@ -75,7 +76,7 @@ jobs:
 
           echo "PROJECT_ZIP=$ZIP_NAME" >> "$GITHUB_ENV"
 
-          echo "Selected project:"
+          echo "Selected Android project:"
           echo "$ZIP_NAME"
 
       - name: Verify and extract project
@@ -91,14 +92,16 @@ jobs:
           unzip -q "$PROJECT_ZIP" -d extracted
 
           if [ -f extracted/project/settings.gradle ]; then
-            echo "PROJECT_DIR=extracted/project" >> "$GITHUB_ENV"
+            PROJECT_DIR="extracted/project"
 
           elif [ -f extracted/settings.gradle ]; then
-            echo "PROJECT_DIR=extracted" >> "$GITHUB_ENV"
+            PROJECT_DIR="extracted"
 
           else
             echo "ERROR: Android Gradle project not found."
 
+            echo
+            echo "Extracted files:"
             find extracted \
               -maxdepth 4 \
               -type f \
@@ -106,6 +109,11 @@ jobs:
 
             exit 1
           fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Android project directory:"
+          echo "$PROJECT_DIR"
 
       - name: Normalize final release configuration
         shell: bash
@@ -118,6 +126,10 @@ jobs:
           from pathlib import Path
           import re
 
+          # ----------------------------------------------------------
+          # Release identity
+          # ----------------------------------------------------------
+
           p = Path("app/build.gradle")
 
           if not p.exists():
@@ -125,27 +137,27 @@ jobs:
                   "ERROR: app/build.gradle not found."
               )
 
-          s = p.read_text(
+          text = p.read_text(
               encoding="utf-8"
           )
 
-          s = re.sub(
+          text = re.sub(
               r'versionCode\s+\d+',
               'versionCode 22',
-              s,
+              text,
               count=1
           )
 
-          s = re.sub(
+          text = re.sub(
               r'versionName\s+"[^"]+"',
               'versionName "1.1.1"',
-              s,
+              text,
               count=1
           )
 
           if (
               "sourceCompatibility JavaVersion.VERSION_17"
-              not in s
+              not in text
           ):
 
               marker = "    buildTypes {"
@@ -157,21 +169,25 @@ jobs:
 
           """
 
-              if marker not in s:
+              if marker not in text:
                   raise SystemExit(
                       "ERROR: Cannot add Java 17 compileOptions."
                   )
 
-              s = s.replace(
+              text = text.replace(
                   marker,
                   block + marker,
                   1
               )
 
           p.write_text(
-              s,
+              text,
               encoding="utf-8"
           )
+
+          # ----------------------------------------------------------
+          # Gradle CI configuration
+          # ----------------------------------------------------------
 
           p = Path("gradle.properties")
 
@@ -188,14 +204,19 @@ jobs:
           required = {
               "org.gradle.jvmargs":
                   "org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8",
+
               "org.gradle.daemon":
                   "org.gradle.daemon=false",
+
               "org.gradle.parallel":
                   "org.gradle.parallel=false",
+
               "android.useAndroidX":
                   "android.useAndroidX=true",
+
               "android.enableJetifier":
                   "android.enableJetifier=false",
+
               "android.nonTransitiveRClass":
                   "android.nonTransitiveRClass=false",
           }
@@ -203,9 +224,9 @@ jobs:
           for key, value in required.items():
 
               lines = [
-                  x
-                  for x in lines
-                  if not x.startswith(key + "=")
+                  line
+                  for line in lines
+                  if not line.startswith(key + "=")
               ]
 
               lines.append(value)
@@ -214,6 +235,12 @@ jobs:
               "\n".join(lines).rstrip() + "\n",
               encoding="utf-8"
           )
+
+          # ----------------------------------------------------------
+          # Room String primary-key compatibility
+          #
+          # Do not modify TaskDao.java.
+          # ----------------------------------------------------------
 
           entity_dir = Path(
               "app/src/main/java/com/taskmaster/promax"
@@ -280,13 +307,12 @@ jobs:
               )
 
           print("FINAL NORMALIZATION: PASS")
-          print("Version: 1.1.1")
-          print("Version code: 22")
+          print("Release: 1.1.1 / 22")
           print("Java 17: PASS")
           print("Room primary keys: PASS")
           PY
 
-      - name: Synchronize QA release checks
+      - name: Synchronize old QA release versions
         shell: bash
         run: |
           set -e
@@ -296,6 +322,18 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
+
+          # ----------------------------------------------------------
+          # Current application release
+          # ----------------------------------------------------------
+
+          RELEASE_NAME = "1.1.1"
+          RELEASE_CODE = "22"
+
+          # ----------------------------------------------------------
+          # QA/check scripts only.
+          # Application source is NOT modified here.
+          # ----------------------------------------------------------
 
           files = [
               Path("qa_check.py"),
@@ -319,37 +357,67 @@ jobs:
 
               original = text
 
-              # Synchronize only stale release identity.
+              # Historical release names.
               text = text.replace(
-                  "1.0.3/14",
+                  "1.0.3",
+                  RELEASE_NAME
+              )
+
+              text = text.replace(
+                  "1.0.9",
+                  RELEASE_NAME
+              )
+
+              # Historical display forms.
+              text = text.replace(
+                  "v1.1.1 (14)",
+                  "v1.1.1 (22)"
+              )
+
+              text = text.replace(
+                  "v1.1.1 (20)",
+                  "v1.1.1 (22)"
+              )
+
+              text = text.replace(
+                  "1.1.1/14",
                   "1.1.1/22"
               )
 
               text = text.replace(
-                  "1.0.3 / 14",
+                  "1.1.1 / 14",
                   "1.1.1 / 22"
               )
 
               text = text.replace(
-                  "1.0.3\\/14",
+                  "1.1.1\\/14",
                   "1.1.1\\/22"
               )
 
+              # Explicit version-code assignments.
               text = re.sub(
-                  r'(?<![0-9.])versionCode\s+14(?![0-9])',
-                  'versionCode 22',
+                  r'(?i)'
+                  r'(versionCode\s*[=:]\s*'
+                  r'|version_code\s*[=:]\s*'
+                  r'|VERSION_CODE\s*[=:]\s*'
+                  r'|EXPECTED_CODE\s*[=:]\s*'
+                  r'|expected_code\s*[=:]\s*'
+                  r'|RELEASE_CODE\s*[=:]\s*'
+                  r'|release_code\s*[=:]\s*)'
+                  r'["\']?(14|20)["\']?',
+                  lambda m: m.group(1) + RELEASE_CODE,
                   text
               )
 
+              # Paired values:
+              # ("1.1.1", 20)
+              # ("1.1.1", "20")
+              # ("1.1.1"/20)
               text = re.sub(
-                  r'(?<![0-9.])versionName\s+["\']1\.0\.3["\']',
-                  'versionName "1.1.1"',
+                  r'(["\']1\.1\.1["\']\s*[,/]\s*'
+                  r'["\']?)(14|20)(["\']?)',
+                  r'\g<1>22\g<3>',
                   text
-              )
-
-              text = text.replace(
-                  "v1.0.3 (14)",
-                  "v1.1.1 (22)"
               )
 
               if text != original:
@@ -363,11 +431,13 @@ jobs:
                       str(path)
                   )
 
-          print("QA release synchronization: PASS")
+          print(
+              "QA RELEASE SYNCHRONIZATION: PASS"
+          )
 
           if changed:
 
-              print("Updated QA files:")
+              print("Updated files:")
 
               for item in changed:
                   print(" -", item)
@@ -375,8 +445,98 @@ jobs:
           else:
 
               print(
-                  "No stale 1.0.3/14 QA release check found."
+                  "No stale release identifiers needed updating."
               )
+          PY
+
+      - name: Verify QA release consistency
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = [
+              Path("qa_check.py"),
+              Path("tools/preflight.py"),
+              Path("tools/final_build_gate.py"),
+              Path("tools/final_release_audit.py"),
+              Path("tools/release_audit.py"),
+              Path("tools/release_manifest.py"),
+          ]
+
+          stale = []
+
+          for path in files:
+
+              if not path.exists():
+                  continue
+
+              text = path.read_text(
+                  encoding="utf-8"
+              )
+
+              if "1.0.3" in text:
+                  stale.append(
+                      f"{path}: 1.0.3"
+                  )
+
+              if "1.0.9" in text:
+                  stale.append(
+                      f"{path}: 1.0.9"
+                  )
+
+              if re.search(
+                  r'(?i)'
+                  r'(versionCode\s*[=:]\s*'
+                  r'|version_code\s*[=:]\s*'
+                  r'|VERSION_CODE\s*[=:]\s*'
+                  r'|EXPECTED_CODE\s*[=:]\s*'
+                  r'|expected_code\s*[=:]\s*'
+                  r'|RELEASE_CODE\s*[=:]\s*'
+                  r'|release_code\s*[=:]\s*)'
+                  r'["\']?(14|20)["\']?',
+                  text
+              ):
+                  stale.append(
+                      f"{path}: old version code"
+                  )
+
+              if (
+                  "v1.1.1 (14)" in text
+                  or "v1.1.1 (20)" in text
+              ):
+                  stale.append(
+                      f"{path}: old version pair"
+                  )
+
+              if re.search(
+                  r'["\']1\.1\.1["\']\s*[,/]\s*'
+                  r'["\']?(14|20)["\']?',
+                  text
+              ):
+                  stale.append(
+                      f"{path}: old version/code pair"
+                  )
+
+          if stale:
+
+              print(
+                  "ERROR: Old QA release identifiers remain:"
+              )
+
+              for item in stale:
+                  print(" -", item)
+
+              raise SystemExit(1)
+
+          print(
+              "QA RELEASE CONSISTENCY: PASS"
+          )
           PY
 
       - name: Verify final project
@@ -422,63 +582,13 @@ jobs:
             '@PrimaryKey @NonNull public String id;' \
             app/src/main/java/com/taskmaster/promax/RecurringTaskEntity.java
 
+          test -f \
+            app/src/main/java/com/taskmaster/promax/MainActivity.java
+
+          test -f \
+            app/src/main/AndroidManifest.xml
+
           echo "FINAL PROJECT VERIFICATION: PASS"
-
-      - name: Verify QA release synchronization
-        shell: bash
-        run: |
-          set -e
-
-          cd "$PROJECT_DIR"
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          files = [
-              Path("qa_check.py"),
-              Path("tools/preflight.py"),
-              Path("tools/final_build_gate.py"),
-              Path("tools/final_release_audit.py"),
-              Path("tools/release_audit.py"),
-              Path("tools/release_manifest.py"),
-          ]
-
-          stale = []
-
-          for path in files:
-
-              if not path.exists():
-                  continue
-
-              text = path.read_text(
-                  encoding="utf-8"
-              )
-
-              if (
-                  "1.0.3/14" in text
-                  or "1.0.3 / 14" in text
-                  or "versionCode 14" in text
-                  or "versionName \"1.0.3\"" in text
-              ):
-                  stale.append(
-                      str(path)
-                  )
-
-          if stale:
-
-              print(
-                  "ERROR: Stale release check remains:"
-              )
-
-              for item in stale:
-                  print(" -", item)
-
-              raise SystemExit(1)
-
-          print(
-              "QA release verification: PASS"
-          )
-          PY
 
       - name: Run preflight checks
         shell: bash
@@ -519,7 +629,7 @@ jobs:
             --stacktrace \
             tasks --all
 
-      - name: Compile Java before full APK build
+      - name: Compile Java before APK build
         shell: bash
         run: |
           set -e
@@ -592,7 +702,7 @@ jobs:
           unzip -t "$APK" >/dev/null
 
           echo "APK signature: PASS"
-          echo "APK ZIP integrity: PASS"
+          echo "APK integrity: PASS"
 
       - name: Upload Gradle failure diagnostics
         if: failure()
